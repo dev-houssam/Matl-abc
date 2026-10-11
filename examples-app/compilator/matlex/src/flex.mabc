@@ -1,0 +1,1353 @@
+/* ===========================================================
+ * matlex — generateur de lexer pour MATL-ABC (equivalent flex/JFlex)
+ * ===========================================================
+ * ROUND 5 : format .max quasi-conforme flex (%{ %} / %token / regles
+ * avec VRAIES actions de code / code utilisateur final), scanner
+ * genere style yylex() (dispatch d'action reelle, pas un simple id de
+ * regle), plusieurs modes d'entree pour le programme genere (fichier,
+ * stdin avec sentinelle "EOF", stdin interactif), et un fichier de
+ * tokens intermediaire pour matyacc.
+ *
+ * Format .max (extension ".max" ou ".l") :
+ *
+ *   %{
+ *       code MATL-ABC verbatim (inclus tel quel en tete du fichier
+ *       genere -- imports supplementaires, types auxiliaires, etc.)
+ *   %}
+ *
+ *   %token NOM1 NOM2 NOM3 ...     (peut apparaitre plusieurs fois)
+ *
+ *   %%
+ *   regex1     { action1 }
+ *   regex2     { action2 }
+ *   ...
+ *   %%
+ *
+ *   code MATL-ABC utilisateur final (fonctions/methodes), inclus
+ *   verbatim a la fin du fichier genere -- typiquement main().
+ *
+ * Differences avec flex/JFlex, assumees et documentees :
+ *   - Pas de section "definitions" nommees ({NOM} reutilisable dans
+ *     les regles) -- prevu pour un round ulterieur si besoin.
+ *   - Les tokens declares par %token sont exposes comme des
+ *     FONCTIONS a zero argument (ex: TOK_INT()) plutot que des
+ *     constantes globales -- MATL-ABC n'a pas de macro #define, et
+ *     une variable globale mutable demanderait @perm (memoire
+ *     partagee inter-processus, hors de propos ici).
+ *   - yylex() retourne -1 pour EOF (pas 0, qui reste un id de token
+ *     valide -- le premier %token declare a l'id 0).
+ * =========================================================== */
+
+import <cstd>
+import <cstring>
+
+struct Frag {
+    int start;
+    int accept;
+}
+
+struct NFA {
+    int  state_count;
+    int  trans_count;
+    int  start;
+    int  accept;
+
+    int[4096]      trans_from;
+    int[4096]      trans_to;
+    char[4096]     trans_sym;
+    int[4096]      trans_kind;   /* 0=char 1=eps 2=any 3=classe */
+    int[4096]      trans_class;  /* id de classe, valide si kind==3 */
+
+    int      class_count;
+    int[64]  class_neg;
+    int[64]  class_range_count;
+    char[1024] class_lo;   /* 64 classes * 16 plages, aplati */
+    char[1024] class_hi;
+
+    int[4096] accept_rule;  /* id de regle pour un etat acceptant, -1 sinon */
+
+    void init() {
+        self.state_count = 0;
+        self.trans_count = 0;
+        self.start       = -1;
+        self.accept      = -1;
+        self.class_count = 0;
+        int i = 0;
+        while (i < 4096) { self.accept_rule[i] = -1; i = i + 1; }
+    }
+
+    int new_state() {
+        int id = self.state_count;
+        self.state_count = self.state_count + 1;
+        return id;
+    }
+
+    void add_edge(int from, int to, char sym, int kind) {
+        int i = self.trans_count;
+        self.trans_from[i]  = from;
+        self.trans_to[i]    = to;
+        self.trans_sym[i]   = sym;
+        self.trans_kind[i]  = kind;
+        self.trans_count    = i + 1;
+    }
+
+    void add_class_edge(int from, int to, int class_id) {
+        int i = self.trans_count;
+        self.trans_from[i]   = from;
+        self.trans_to[i]     = to;
+        self.trans_kind[i]   = 3;
+        self.trans_class[i]  = class_id;
+        self.trans_count     = i + 1;
+    }
+
+    int new_class(int neg) {
+        int id = self.class_count;
+        self.class_neg[id]         = neg;
+        self.class_range_count[id] = 0;
+        self.class_count           = id + 1;
+        return id;
+    }
+
+    void add_class_range(int class_id, char lo, char hi) {
+        int i = self.class_range_count[class_id];
+        self.class_lo[class_id * 16 + i] = lo;
+        self.class_hi[class_id * 16 + i] = hi;
+        self.class_range_count[class_id] = i + 1;
+    }
+
+    int char_in_class(int class_id, char c) {
+        int i = 0;
+        int found = 0;
+        while (i < self.class_range_count[class_id]) {
+            char lo = self.class_lo[class_id * 16 + i];
+            char hi = self.class_hi[class_id * 16 + i];
+            if (c >= lo && c <= hi) { found = 1; }
+            i = i + 1;
+        }
+        if (self.class_neg[class_id] == 1) {
+            if (found == 1) { return 0; }
+            return 1;
+        }
+        return found;
+    }
+
+    /* Est-ce que la transition k accepte le caractere c ? (kind != 1) */
+    int trans_accepts(int k, char c) {
+        int kind = self.trans_kind[k];
+        if (kind == 0) { return self.trans_sym[k] == c; }
+        if (kind == 2) { return 1; }
+        if (kind == 3) { return self.char_in_class(self.trans_class[k], c); }
+        return 0;
+    }
+
+    void eps_closure(int* set) {
+        int changed = 1;
+        while (changed == 1) {
+            changed = 0;
+            int i = 0;
+            while (i < self.trans_count) {
+                if (self.trans_kind[i] == 1) {
+                    int from = self.trans_from[i];
+                    int to   = self.trans_to[i];
+                    if (set[from] == 1 && set[to] == 0) {
+                        set[to] = 1;
+                        changed = 1;
+                    }
+                }
+                i = i + 1;
+            }
+        }
+    }
+
+    int matches(char* input) {
+        int n = cast<int>(strlen(input));
+
+        int[4096] cur;
+        int i = 0;
+        while (i < self.state_count) { cur[i] = 0; i = i + 1; }
+        cur[self.start] = 1;
+        self.eps_closure(&cur);
+
+        int pos = 0;
+        while (pos < n) {
+            char c = input[pos];
+            int[4096] nxt;
+            int j = 0;
+            while (j < self.state_count) { nxt[j] = 0; j = j + 1; }
+
+            int k = 0;
+            while (k < self.trans_count) {
+                if (self.trans_kind[k] != 1) {
+                    if (cur[self.trans_from[k]] == 1 && self.trans_accepts(k, c) == 1) {
+                        nxt[self.trans_to[k]] = 1;
+                    }
+                }
+                k = k + 1;
+            }
+            self.eps_closure(&nxt);
+
+            int m = 0;
+            while (m < self.state_count) { cur[m] = nxt[m]; m = m + 1; }
+            pos = pos + 1;
+        }
+
+        return cur[self.accept];
+    }
+}
+
+struct RegexParser {
+    char* pat;
+    int   pos;
+    int   len;
+    NFA*  nfa;
+
+    void init(char* pattern, NFA* target) {
+        self.pat = pattern;
+        self.pos = 0;
+        self.len = cast<int>(strlen(pattern));
+        self.nfa = target;
+    }
+
+    int at_end() {
+        return self.pos >= self.len;
+    }
+
+    char peek() {
+        if (self.at_end()) return cast<char>(0);
+        return self.pat[self.pos];
+    }
+
+    char peek2() {
+        if (self.pos + 1 >= self.len) return cast<char>(0);
+        return self.pat[self.pos + 1];
+    }
+
+    char advance() {
+        char c = self.pat[self.pos];
+        self.pos = self.pos + 1;
+        return c;
+    }
+
+    /* ---- constructeurs de fragments Thompson ---- */
+
+    Frag frag_char(char c) {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_edge(s, a, c, 0);
+        Frag f;
+        f.start  = s;
+        f.accept = a;
+        return f;
+    }
+
+    Frag frag_any() {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_edge(s, a, cast<char>(0), 2);
+        Frag f;
+        f.start  = s;
+        f.accept = a;
+        return f;
+    }
+
+    Frag frag_class(int class_id) {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_class_edge(s, a, class_id);
+        Frag f;
+        f.start  = s;
+        f.accept = a;
+        return f;
+    }
+
+    Frag frag_concat(Frag a, Frag b) {
+        self.nfa.add_edge(a.accept, b.start, cast<char>(0), 1);
+        Frag f;
+        f.start  = a.start;
+        f.accept = b.accept;
+        return f;
+    }
+
+    Frag frag_union(Frag a, Frag b) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(s, b.start, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        self.nfa.add_edge(b.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = s;
+        f.accept = acc;
+        return f;
+    }
+
+    Frag frag_star(Frag a) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(s, acc, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = s;
+        f.accept = acc;
+        return f;
+    }
+
+    Frag frag_plus(Frag a) {
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(a.accept, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = a.start;
+        f.accept = acc;
+        return f;
+    }
+
+    Frag frag_optional(Frag a) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(s, acc, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = s;
+        f.accept = acc;
+        return f;
+    }
+
+    /* Traduit une lettre d'echappement standard (t/n/r) vers l'octet
+       de controle correspondant ; tout autre caractere s'echappe
+       lui-meme (comportement deja en place au round 1-3). Necessaire
+       pour pouvoir ecrire des patterns comme "[ \t\n\r]+" dans une
+       SPEC TEXTE (round 4) sans devoir y injecter de vrais octets de
+       controle, qui casseraient le decoupage ligne-par-ligne. */
+    char resolve_escape(char e) {
+        if (e == 't') { return cast<char>(9); }
+        if (e == 'n') { return cast<char>(10); }
+        if (e == 'r') { return cast<char>(13); }
+        return e;
+    }
+
+    /* ---- classes : '[' '^'? (char | char'-'char)+ ']' ---- */
+
+    Frag parse_class() {
+        self.advance(); /* '[' */
+        int neg = 0;
+        if (self.peek() == '^') {
+            neg = 1;
+            self.advance();
+        }
+        int cid = self.nfa.new_class(neg);
+
+        while (!self.at_end() && self.peek() != ']') {
+            char c1 = self.advance();
+            if (c1 == '\\') { c1 = self.resolve_escape(self.advance()); }
+
+            if (!self.at_end() && self.peek() == '-' && self.peek2() != ']' && self.peek2() != cast<char>(0)) {
+                self.advance(); /* '-' */
+                char c2 = self.advance();
+                if (c2 == '\\') { c2 = self.resolve_escape(self.advance()); }
+                self.nfa.add_class_range(cid, c1, c2);
+            } else {
+                self.nfa.add_class_range(cid, c1, c1);
+            }
+        }
+        if (self.peek() == ']') { self.advance(); }
+
+        return self.frag_class(cid);
+    }
+
+    /* ---- descente recursive ---- */
+
+    Frag parse_atom() {
+        char c = self.peek();
+        if (c == '(') {
+            self.advance();
+            Frag f = self.parse_union();
+            if (self.peek() == ')') { self.advance(); }
+            return f;
+        }
+        if (c == '[') {
+            return self.parse_class();
+        }
+        if (c == '.') {
+            self.advance();
+            return self.frag_any();
+        }
+        if (c == '\\') {
+            self.advance();
+            char e = self.advance();
+            return self.frag_char(self.resolve_escape(e));
+        }
+        self.advance();
+        return self.frag_char(c);
+    }
+
+    Frag parse_repeat() {
+        Frag a = self.parse_atom();
+        if (!self.at_end()) {
+            char c = self.peek();
+            if (c == '*') { self.advance(); return self.frag_star(a); }
+            if (c == '+') { self.advance(); return self.frag_plus(a); }
+            if (c == '?') { self.advance(); return self.frag_optional(a); }
+        }
+        return a;
+    }
+
+    Frag parse_concat() {
+        Frag left = self.parse_repeat();
+        while (!self.at_end() && self.peek() != '|' && self.peek() != ')') {
+            Frag right = self.parse_repeat();
+            left = self.frag_concat(left, right);
+        }
+        return left;
+    }
+
+    Frag parse_union() {
+        Frag left = self.parse_concat();
+        while (!self.at_end() && self.peek() == '|') {
+            self.advance();
+            Frag right = self.parse_concat();
+            left = self.frag_union(left, right);
+        }
+        return left;
+    }
+
+    void compile() {
+        Frag f = self.parse_union();
+        self.nfa.start  = f.start;
+        self.nfa.accept = f.accept;
+    }
+
+    /* Compile 'self.pat' comme fragment INDEPENDANT rattache par
+       epsilon a l'etat START COMMUN du NFA (self.nfa.start, deja
+       cree par l'appelant avant le premier appel a compile_rule).
+       L'etat d'acceptation du fragment est marque avec rule_id.
+       Permet de combiner plusieurs regles dans UN SEUL NFA, ce que
+       compile() (mono-regle) ne fait pas. */
+    void compile_rule(int rule_id) {
+        Frag f = self.parse_union();
+        self.nfa.add_edge(self.nfa.start, f.start, cast<char>(0), 1);
+        self.nfa.accept_rule[f.accept] = rule_id;
+    }
+}
+
+/* ===========================================================
+ * ETAPE B : NFA -> DFA (subset construction)
+ * ===========================================================
+ * DFA a capacite fixe (128 etats max, alphabet = 256 octets).
+ * Chaque etat DFA correspond a un SOUS-ENSEMBLE d'etats NFA
+ * (apres cloture epsilon). On represente ce sous-ensemble comme
+ * une LISTE TRIEE d'ids d'etats NFA (triee naturellement car on
+ * la construit en parcourant les etats NFA dans l'ordre croissant)
+ * plutot qu'un tableau d'appartenance complet -- moins de memoire,
+ * et compare-egalite en O(longueur) au lieu de O(nfa.state_count).
+ * =========================================================== */
+
+struct DFA {
+    int  state_count;
+    int  start;
+    int[128]   is_final;   /* id de regle GAGNANTE pour cet etat, -1 si non acceptant */
+    int[32768] trans;      /* aplati [etat*256 + octet] -> etat ou -1 */
+
+    void init() {
+        self.state_count = 0;
+        self.start       = -1;
+        int i = 0;
+        while (i < 32768) { self.trans[i] = -1; i = i + 1; }
+        i = 0;
+        while (i < 128) { self.is_final[i] = -1; i = i + 1; }
+    }
+
+    int step(int state, char c) {
+        int b = cast<int>(c);
+        if (b < 0) { return -1; }  /* octets >127 non geres (limitation documentee) */
+        return self.trans[state * 256 + b];
+    }
+
+    /* Correspondance PLEINE CHAINE (round 2) : conservee pour tests
+       mono-regle. Retourne 1 si 'input' est integralement reconnu
+       par N'IMPORTE QUELLE regle du DFA, 0 sinon. */
+    int matches(char* input) {
+        int n = cast<int>(strlen(input));
+        int state = self.start;
+        int pos = 0;
+        while (pos < n) {
+            if (state == -1) { return 0; }
+            state = self.step(state, input[pos]);
+            pos = pos + 1;
+        }
+        if (state == -1) { return 0; }
+        if (self.is_final[state] != -1) { return 1; }
+        return 0;
+    }
+}
+
+struct DfaBuilder {
+    NFA* nfa;
+    DFA* dfa;
+
+    int[128]  subset_len;
+    int[16384] subset_states;  /* 128 etats DFA * 128 etats NFA max par sous-ensemble, aplati */
+
+    void init(NFA* n, DFA* d) {
+        self.nfa = n;
+        self.dfa = d;
+    }
+
+    /* Ensemble d'appartenance (taille nfa.state_count) -> liste triee d'ids. */
+    int set_to_list(int* set, int* out_list) {
+        int n = self.nfa.state_count;
+        int i = 0;
+        int len = 0;
+        while (i < n) {
+            if (set[i] == 1) {
+                out_list[len] = i;
+                len = len + 1;
+            }
+            i = i + 1;
+        }
+        return len;
+    }
+
+    int list_equals_subset(int* a, int alen, int subset_id) {
+        if (alen != self.subset_len[subset_id]) { return 0; }
+        int i = 0;
+        while (i < alen) {
+            if (a[i] != self.subset_states[subset_id * 128 + i]) { return 0; }
+            i = i + 1;
+        }
+        return 1;
+    }
+
+    /* Retrouve l'etat DFA correspondant a 'list', ou en cree un nouveau. */
+    int find_or_add(int* list, int len) {
+        int i = 0;
+        while (i < self.dfa.state_count) {
+            if (self.list_equals_subset(list, len, i) == 1) {
+                return i;
+            }
+            i = i + 1;
+        }
+        int id = self.dfa.state_count;
+        self.dfa.state_count = id + 1;
+        self.subset_len[id] = len;
+        int j = 0;
+        while (j < len) {
+            self.subset_states[id * 128 + j] = list[j];
+            j = j + 1;
+        }
+        int k = 0;
+        int best_rule = -1;
+        while (k < len) {
+            int r = self.nfa.accept_rule[list[k]];
+            if (r != -1) {
+                if (best_rule == -1 || r < best_rule) { best_rule = r; }
+            }
+            k = k + 1;
+        }
+        self.dfa.is_final[id] = best_rule;
+        return id;
+    }
+
+    void build() {
+        int[4096] startset;
+        int i = 0;
+        while (i < self.nfa.state_count) { startset[i] = 0; i = i + 1; }
+        startset[self.nfa.start] = 1;
+        self.nfa.eps_closure(&startset);
+
+        int[128] start_list;
+        int start_len = self.set_to_list(&startset, &start_list);
+        self.dfa.start = self.find_or_add(&start_list, start_len);
+
+        int[128] processed;
+        int p = 0;
+        while (p < 128) { processed[p] = 0; p = p + 1; }
+
+        int done = 0;
+        while (done == 0) {
+            int target = -1;
+            int t = 0;
+            while (t < self.dfa.state_count && target == -1) {
+                if (processed[t] == 0) { target = t; }
+                t = t + 1;
+            }
+            if (target == -1) {
+                done = 1;
+            } else {
+                processed[target] = 1;
+                int len = self.subset_len[target];
+
+                int octet = 0;
+                while (octet < 256) {
+                    int[4096] moveset;
+                    int mi = 0;
+                    while (mi < self.nfa.state_count) { moveset[mi] = 0; mi = mi + 1; }
+
+                    int any_move = 0;
+                    int si = 0;
+                    while (si < len) {
+                        int st = self.subset_states[target * 128 + si];
+                        int k = 0;
+                        while (k < self.nfa.trans_count) {
+                            if (self.nfa.trans_kind[k] != 1 && self.nfa.trans_from[k] == st) {
+                                if (self.nfa.trans_accepts(k, cast<char>(octet)) == 1) {
+                                    moveset[self.nfa.trans_to[k]] = 1;
+                                    any_move = 1;
+                                }
+                            }
+                            k = k + 1;
+                        }
+                        si = si + 1;
+                    }
+
+                    if (any_move == 1) {
+                        self.nfa.eps_closure(&moveset);
+                        int[128] mlist;
+                        int mlen = self.set_to_list(&moveset, &mlist);
+                        int tid = self.find_or_add(&mlist, mlen);
+                        self.dfa.trans[target * 256 + octet] = tid;
+                    }
+
+                    octet = octet + 1;
+                }
+            }
+        }
+    }
+}
+
+/* ===========================================================
+ * MINIMISATION DFA (raffinement de partitions)
+ * ===========================================================
+ * Partition initiale : un groupe par valeur de is_final DISTINCTE
+ * (et non "final vs non-final" comme la minimisation classique) --
+ * deux etats acceptant des regles differentes ne doivent jamais
+ * fusionner. Puis raffinement iteratif : deux etats du meme groupe
+ * sont separes des qu'ils menent, pour un meme octet, vers des
+ * groupes differents. On s'arrete quand plus aucun groupe ne se
+ * scinde (point fixe).
+ * =========================================================== */
+
+struct DfaMinimizer {
+    DFA* src;
+    int[128] group;
+    int group_count;
+
+    void init(DFA* d) {
+        self.src = d;
+    }
+
+    void minimize() {
+        /* partition initiale : par valeur de is_final */
+        int[128] seen_val;
+        int[128] seen_group;
+        int nseen = 0;
+
+        int i = 0;
+        while (i < self.src.state_count) {
+            int fv = self.src.is_final[i];
+            int found = -1;
+            int j = 0;
+            while (j < nseen) {
+                if (seen_val[j] == fv) { found = j; }
+                j = j + 1;
+            }
+            if (found == -1) {
+                seen_val[nseen] = fv;
+                seen_group[nseen] = nseen;
+                found = nseen;
+                nseen = nseen + 1;
+            }
+            self.group[i] = seen_group[found];
+            i = i + 1;
+        }
+        self.group_count = nseen;
+
+        /* raffinement iteratif jusqu'a point fixe */
+        int changed = 1;
+        while (changed == 1) {
+            int[128] new_group;
+            int[128] rep_state;
+            int rep_count = 0;
+
+            int s = 0;
+            while (s < self.src.state_count) {
+                int assigned = -1;
+                int g = 0;
+                while (g < rep_count) {
+                    int r = rep_state[g];
+                    if (assigned == -1 && self.group[r] == self.group[s]) {
+                        int same = 1;
+                        int b = 0;
+                        while (b < 256) {
+                            int ts = self.src.trans[s * 256 + b];
+                            int tr = self.src.trans[r * 256 + b];
+                            int gts = -1;
+                            int gtr = -1;
+                            if (ts != -1) { gts = self.group[ts]; }
+                            if (tr != -1) { gtr = self.group[tr]; }
+                            if (gts != gtr) { same = 0; }
+                            b = b + 1;
+                        }
+                        if (same == 1) { assigned = g; }
+                    }
+                    g = g + 1;
+                }
+                if (assigned == -1) {
+                    rep_state[rep_count] = s;
+                    assigned = rep_count;
+                    rep_count = rep_count + 1;
+                }
+                new_group[s] = assigned;
+                s = s + 1;
+            }
+
+            if (rep_count != self.group_count) { changed = 1; } else { changed = 0; }
+            self.group_count = rep_count;
+            int k = 0;
+            while (k < self.src.state_count) { self.group[k] = new_group[k]; k = k + 1; }
+        }
+    }
+
+    /* Construit le DFA minimise dans 'out' a partir du regroupement
+       calcule par minimize(). Un seul etat representant par groupe. */
+    void build_minimized(DFA* out) {
+        out.init();
+        out.state_count = self.group_count;
+
+        int[128] rep_of_group;
+        int g = 0;
+        while (g < self.group_count) {
+            int found = -1;
+            int s = 0;
+            while (s < self.src.state_count) {
+                if (found == -1 && self.group[s] == g) { found = s; }
+                s = s + 1;
+            }
+            rep_of_group[g] = found;
+            g = g + 1;
+        }
+
+        g = 0;
+        while (g < self.group_count) {
+            int rep = rep_of_group[g];
+            out.is_final[g] = self.src.is_final[rep];
+            int b = 0;
+            while (b < 256) {
+                int t = self.src.trans[rep * 256 + b];
+                if (t == -1) {
+                    out.trans[g * 256 + b] = -1;
+                } else {
+                    out.trans[g * 256 + b] = self.group[t];
+                }
+                b = b + 1;
+            }
+            g = g + 1;
+        }
+
+        out.start = self.group[self.src.start];
+    }
+}
+
+/* ===========================================================
+ * SCANNER : maximal munch multi-regles
+ * =========================================================== */
+
+struct TokenSpan {
+    int rule_id;   /* -2 = erreur lexicale (aucune regle ne matche) */
+    int start;     /* index de debut dans le buffer source */
+    int len;       /* longueur du lexeme */
+}
+
+struct Scanner {
+    DFA*  dfa;
+    char* src;
+    int   pos;
+    int   len;
+
+    void init(DFA* d, char* source) {
+        self.dfa = d;
+        self.src = source;
+        self.pos = 0;
+        self.len = cast<int>(strlen(source));
+    }
+
+    int at_end() {
+        return self.pos >= self.len;
+    }
+
+    /* Un seul token par maximal munch : avance dans le DFA tant que
+       des transitions existent, retient la DERNIERE position ou
+       l'automate etait dans un etat acceptant, puis y retombe. */
+    TokenSpan next_token() {
+        TokenSpan tok;
+        tok.start = self.pos;
+
+        int state     = self.dfa.start;
+        int best_rule = -1;
+        int best_i    = 0;
+        int i         = 0;
+
+        while (self.pos + i < self.len) {
+            char c = self.src[self.pos + i];
+            int nstate = self.dfa.step(state, c);
+            if (nstate == -1) { break; }
+            state = nstate;
+            i = i + 1;
+            if (self.dfa.is_final[state] != -1) {
+                best_rule = self.dfa.is_final[state];
+                best_i    = i;
+            }
+        }
+
+        if (best_rule == -1) {
+            /* Aucune regle n'accepte, meme sur 1 seul caractere :
+               erreur lexicale. On avance de 1 pour permettre une
+               reprise (comportement standard de recuperation). */
+            tok.rule_id = -2;
+            tok.len     = 1;
+            self.pos    = self.pos + 1;
+            return tok;
+        }
+
+        tok.rule_id = best_rule;
+        tok.len     = best_i;
+        self.pos    = self.pos + best_i;
+        return tok;
+    }
+
+    /* Comme next_token(), mais saute silencieusement les tokens de
+       la regle 0 (WHITESPACE par convention dans ce harnais). */
+    TokenSpan next_real_token() {
+        TokenSpan tok = self.next_token();
+        while (tok.rule_id == 0 && self.at_end() == 0) {
+            tok = self.next_token();
+        }
+        return tok;
+    }
+}
+
+/* ===========================================================
+ * SPEC .max : format quasi-conforme flex
+ * =========================================================== */
+
+struct RuleFull {
+    char[160]  pattern;
+    char[1024] action;   /* inclut ses propres accolades { ... } */
+}
+
+struct TokenDecl {
+    char[32] name;
+}
+
+struct MaxFile {
+    char[2048] prologue_code;
+    int        prologue_len;
+
+    TokenDecl[64] tokens;
+    int           token_count;
+
+    RuleFull[64] rules;
+    int          rule_count;
+
+    char[4096] epilogue_code;
+    int        epilogue_len;
+}
+
+struct MaxParser {
+    char* text;
+    int   pos;
+    int   len;
+
+    void init(char* spec_text) {
+        self.text = spec_text;
+        self.pos  = 0;
+        self.len  = cast<int>(strlen(spec_text));
+    }
+
+    int at_end() {
+        return self.pos >= self.len;
+    }
+
+    char peek() {
+        if (self.at_end()) return cast<char>(0);
+        return self.text[self.pos];
+    }
+
+    char advance() {
+        char c = self.text[self.pos];
+        self.pos = self.pos + 1;
+        return c;
+    }
+
+    int is_inline_ws(char c) {
+        return c == ' ' || c == cast<char>(9);
+    }
+
+    int is_ws_or_nl(char c) {
+        return c == ' ' || c == cast<char>(9) || c == cast<char>(10) || c == cast<char>(13);
+    }
+
+    /* Copie VERBATIM les lignes suivantes dans out.prologue_code
+       jusqu'a une ligne dont le contenu (trim) est exactement "%}". */
+    void copy_prologue_block(MaxFile* out) {
+        int copying = 1;
+        while (copying == 1) {
+            if (self.at_end()) {
+                copying = 0;
+            } else {
+                int bls = self.pos;
+                while (!self.at_end() && self.peek() != cast<char>(10)) { self.advance(); }
+                int ble = self.pos;
+                if (!self.at_end()) { self.advance(); }
+
+                int bts = bls;
+                while (bts < ble && self.is_inline_ws(self.text[bts])) { bts = bts + 1; }
+                int bte = ble;
+                while (bte > bts && self.is_inline_ws(self.text[bte - 1])) { bte = bte - 1; }
+                int btlen = bte - bts;
+
+                if (btlen == 2 && self.text[bts] == '%' && self.text[bts + 1] == '}') {
+                    copying = 0;
+                } else {
+                    int i = 0;
+                    while (i < (ble - bls) && out.prologue_len < 2047) {
+                        out.prologue_code[out.prologue_len] = self.text[bls + i];
+                        out.prologue_len = out.prologue_len + 1;
+                        i = i + 1;
+                    }
+                    if (out.prologue_len < 2047) {
+                        out.prologue_code[out.prologue_len] = cast<char>(10);
+                        out.prologue_len = out.prologue_len + 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /* "%token NOM1 NOM2 ..." -- p pointe juste apres "%token", te est
+       la fin (trim) de la ligne. */
+    void parse_token_line(MaxFile* out, int p, int te) {
+        while (p < te) {
+            while (p < te && self.is_inline_ws(self.text[p])) { p = p + 1; }
+            int ns = p;
+            while (p < te && self.is_inline_ws(self.text[p]) == 0) { p = p + 1; }
+            int ne = p;
+            if (ne > ns) {
+                int tid = out.token_count;
+                int nlen = ne - ns;
+                if (nlen > 31) { nlen = 31; }
+                int i = 0;
+                while (i < nlen) { out.tokens[tid].name[i] = self.text[ns + i]; i = i + 1; }
+                out.tokens[tid].name[nlen] = cast<char>(0);
+                out.token_count = tid + 1;
+            }
+        }
+    }
+
+    void parse_prologue(MaxFile* out) {
+        int done = 0;
+        while (done == 0) {
+            if (self.at_end()) {
+                done = 1;
+            } else {
+                int ls = self.pos;
+                while (!self.at_end() && self.peek() != cast<char>(10)) { self.advance(); }
+                int le = self.pos;
+                if (!self.at_end()) { self.advance(); }
+
+                int ts = ls;
+                while (ts < le && self.is_inline_ws(self.text[ts])) { ts = ts + 1; }
+                int te = le;
+                while (te > ts && self.is_inline_ws(self.text[te - 1])) { te = te - 1; }
+                int tlen = te - ts;
+
+                if (tlen == 2 && self.text[ts] == '%' && self.text[ts + 1] == '%') {
+                    done = 1;
+                } else if (tlen == 2 && self.text[ts] == '%' && self.text[ts + 1] == '{') {
+                    self.copy_prologue_block(out);
+                } else if (tlen >= 6 && self.text[ts] == '%' && self.text[ts + 1] == 't' && self.text[ts + 2] == 'o' && self.text[ts + 3] == 'k' && self.text[ts + 4] == 'e' && self.text[ts + 5] == 'n') {
+                    self.parse_token_line(out, ts + 6, te);
+                }
+            }
+        }
+    }
+
+    void parse_rules(MaxFile* out) {
+        int done = 0;
+        while (done == 0) {
+            while (!self.at_end() && self.is_ws_or_nl(self.peek())) { self.advance(); }
+            if (self.at_end()) {
+                done = 1;
+            } else if (self.peek() == '%' && self.pos + 1 < self.len && self.text[self.pos + 1] == '%') {
+                self.pos = self.pos + 2;
+                done = 1;
+            } else {
+                int ps = self.pos;
+                while (!self.at_end() && self.peek() != '{') { self.advance(); }
+                int pe = self.pos;
+                while (pe > ps && self.is_ws_or_nl(self.text[pe - 1])) { pe = pe - 1; }
+
+                if (self.at_end()) {
+                    done = 1;
+                } else {
+                    int as_ = self.pos;
+                    int depth = 0;
+                    int scanning = 1;
+                    while (scanning == 1) {
+                        if (self.at_end()) {
+                            scanning = 0;
+                        } else {
+                            char c = self.advance();
+                            if (c == '{') { depth = depth + 1; }
+                            else if (c == '}') {
+                                depth = depth - 1;
+                                if (depth == 0) { scanning = 0; }
+                            }
+                        }
+                    }
+                    int ae = self.pos;
+
+                    int rid = out.rule_count;
+                    int plen = pe - ps;
+                    if (plen > 159) { plen = 159; }
+                    int i = 0;
+                    while (i < plen) { out.rules[rid].pattern[i] = self.text[ps + i]; i = i + 1; }
+                    out.rules[rid].pattern[plen] = cast<char>(0);
+
+                    int alen = ae - as_;
+                    if (alen > 1023) { alen = 1023; }
+                    i = 0;
+                    while (i < alen) { out.rules[rid].action[i] = self.text[as_ + i]; i = i + 1; }
+                    out.rules[rid].action[alen] = cast<char>(0);
+
+                    out.rule_count = rid + 1;
+                }
+            }
+        }
+    }
+
+    void parse_epilogue(MaxFile* out) {
+        int es = self.pos;
+        while (!self.at_end()) { self.advance(); }
+        int elen = self.pos - es;
+        if (elen > 4095) { elen = 4095; }
+        int i = 0;
+        while (i < elen) { out.epilogue_code[i] = self.text[es + i]; i = i + 1; }
+        out.epilogue_code[elen] = cast<char>(0);
+        out.epilogue_len = elen;
+    }
+
+    void parse(MaxFile* out) {
+        out.prologue_len = 0;
+        out.token_count  = 0;
+        out.rule_count   = 0;
+        out.epilogue_len = 0;
+
+        self.parse_prologue(out);
+        self.parse_rules(out);
+        self.parse_epilogue(out);
+    }
+
+    /* Compile toutes les regles de la spec dans un NFA combine. */
+    void build_nfa(MaxFile* spec, NFA* nfa) {
+        nfa.init();
+        nfa.start = nfa.new_state();
+
+        RegexParser p;
+        int i = 0;
+        while (i < spec.rule_count) {
+            p.init(&spec.rules[i].pattern, nfa);
+            p.compile_rule(i);
+            i = i + 1;
+        }
+    }
+}
+
+/* ===========================================================
+ * LECTURE DE FICHIER (utilisee par matlex lui-meme pour lire la
+ * spec .max, ET regeneree dans le driver du scanner produit)
+ * =========================================================== */
+int read_whole_file(char* path, char* buf, int cap) {
+    char* mode = "r";
+    char* f = fopen(path, mode);
+    if (f == null) { return -1; }
+
+    int off = 0;
+    char* got = fgets(buf + off, cap - off, f);
+    while (got != null) {
+        off = off + cast<int>(strlen(buf + off));
+        if (cap - off < 2) {
+            got = null;
+        } else {
+            got = fgets(buf + off, cap - off, f);
+        }
+    }
+    fclose(f);
+    buf[off] = cast<char>(0);
+    return off;
+}
+
+/* ===========================================================
+ * GENERATION DE CODE : scanner MATL-ABC autonome, style yylex()
+ * ===========================================================
+ * A la difference du round 4 (qui renvoyait un simple id de regle),
+ * chaque regle execute maintenant son VRAI code d'action -- exactement
+ * comme le fait le .c genere par flex. Une action qui fait "return X;"
+ * termine yylex() avec ce token ; une action qui ne fait pas de return
+ * (ex: ignorer les espaces) laisse yylex() boucler sur le token suivant.
+ * =========================================================== */
+void gen_scanner_v2(DFA* dfa, MaxFile* spec, char* demo_source) {
+    printf("/* =====================================================\n");
+    printf(" * Scanner genere automatiquement par matlex (round 5, .max)\n");
+    printf(" * NE PAS EDITER A LA MAIN -- regenerer depuis la spec .max\n");
+    printf(" * ===================================================== */\n\n");
+    printf("import <cstd>\n");
+    printf("import <cstring>\n\n");
+
+    if (spec.prologue_len > 0) {
+        printf("/* ---- prologue (%%{ ... %%}) ---- */\n");
+        printf("%s\n", &spec.prologue_code);
+    }
+
+    if (spec.token_count > 0) {
+        printf("/* ---- constantes de token (%%token), exposees comme fonctions ---- */\n");
+        int ti = 0;
+        while (ti < spec.token_count) {
+            printf("int %s() { return %d; }\n", &spec.tokens[ti].name, ti);
+            ti = ti + 1;
+        }
+        print("\n");
+    }
+
+    printf("struct GenScanner {\n");
+    printf("    char* src;\n    int pos;\n    int len;\n");
+    printf("    int[%d] trans;\n", dfa.state_count * 256);
+    printf("    int[%d] is_final;\n", dfa.state_count);
+    printf("    char[256] yytext_buf;\n    int yyleng;\n\n");
+
+    printf("    void init(char* source) {\n");
+    printf("        self.src = source;\n        self.pos = 0;\n        self.len = cast<int>(strlen(source));\n");
+    printf("        int i = 0;\n        while (i < %d) { self.trans[i] = -1; i = i + 1; }\n", dfa.state_count * 256);
+    int s = 0;
+    while (s < dfa.state_count) {
+        int b = 0;
+        while (b < 256) {
+            int t = dfa.trans[s * 256 + b];
+            if (t != -1) {
+                printf("        self.trans[%d] = %d;\n", s * 256 + b, t);
+            }
+            b = b + 1;
+        }
+        s = s + 1;
+    }
+    s = 0;
+    while (s < dfa.state_count) {
+        printf("        self.is_final[%d] = %d;\n", s, dfa.is_final[s]);
+        s = s + 1;
+    }
+    printf("    }\n\n");
+
+    printf("    int at_end() { return self.pos >= self.len; }\n\n");
+
+    printf("    int step(int state, char c) {\n");
+    printf("        int b = cast<int>(c);\n        if (b < 0) { return -1; }\n");
+    printf("        return self.trans[state * 256 + b];\n");
+    printf("    }\n\n");
+
+    printf("    /* Une passe de maximal munch ; remplit yytext_buf/yyleng.\n");
+    printf("       Retourne l'id de regle gagnante, ou -1 si aucune regle\n");
+    printf("       n'accepte (erreur lexicale -- 1 caractere consomme). */\n");
+    printf("    int scan_one() {\n");
+    printf("        int state = %d;\n", dfa.start);
+    printf("        int best_rule = -1;\n        int best_i = 0;\n        int i = 0;\n");
+    printf("        while (self.pos + i < self.len) {\n");
+    printf("            char c = self.src[self.pos + i];\n");
+    printf("            int nstate = self.step(state, c);\n");
+    printf("            if (nstate == -1) { break; }\n");
+    printf("            state = nstate;\n            i = i + 1;\n");
+    printf("            if (self.is_final[state] != -1) { best_rule = self.is_final[state]; best_i = i; }\n");
+    printf("        }\n");
+    printf("        if (best_rule == -1) {\n");
+    printf("            self.yyleng = 1;\n");
+    printf("            self.yytext_buf[0] = self.src[self.pos];\n");
+    printf("            self.yytext_buf[1] = cast<char>(0);\n");
+    printf("            self.pos = self.pos + 1;\n");
+    printf("            return -1;\n");
+    printf("        }\n");
+    printf("        self.yyleng = best_i;\n");
+    printf("        int k = 0;\n        while (k < best_i && k < 255) { self.yytext_buf[k] = self.src[self.pos + k]; k = k + 1; }\n");
+    printf("        self.yytext_buf[k] = cast<char>(0);\n");
+    printf("        self.pos = self.pos + best_i;\n");
+    printf("        return best_rule;\n");
+    printf("    }\n\n");
+
+    printf("    /* yylex() : boucle de scan style flex. -1 = fin d'entree. */\n");
+    printf("    int yylex() {\n");
+    printf("        int cont = 1;\n        int result = -1;\n");
+    printf("        while (cont == 1) {\n");
+    printf("            if (self.at_end()) {\n");
+    printf("                cont = 0;\n");
+    printf("            } else {\n");
+    printf("                char* yytext = &self.yytext_buf;\n");
+    printf("                int rid = self.scan_one();\n");
+    printf("                int yyleng = self.yyleng;\n");
+    printf("                if (rid == -1) {\n");
+    printf("                    /* erreur lexicale : ignoree, reprise au caractere suivant */\n");
+    printf("                    int lex_err = 1;\n");
+
+    int ri = 0;
+    while (ri < spec.rule_count) {
+        if (ri == 0) {
+            printf("                } else if (rid == %d) %s\n", ri, &spec.rules[ri].action);
+        } else {
+            printf("                else if (rid == %d) %s\n", ri, &spec.rules[ri].action);
+        }
+        ri = ri + 1;
+    }
+    if (spec.rule_count == 0) {
+        printf("                }\n");  /* aucune regle : fermer le bloc if (rid == -1) tel quel */
+    }
+    printf("            }\n");
+    printf("        }\n");
+    printf("        return result;\n");
+    printf("    }\n");
+    printf("}\n\n");
+
+    int has_epilogue_code = 0;
+    int eci = 0;
+    while (eci < spec.epilogue_len) {
+        char ec = spec.epilogue_code[eci];
+        if (ec != ' ' && ec != cast<char>(9) && ec != cast<char>(10) && ec != cast<char>(13)) {
+            has_epilogue_code = 1;
+        }
+        eci = eci + 1;
+    }
+
+    if (has_epilogue_code == 1) {
+        printf("/* ---- code utilisateur final (apres le 2e %%%%) ---- */\n");
+        printf("%s\n", &spec.epilogue_code);
+    } else {
+        /* Driver par defaut si l'utilisateur n'a pas fourni son propre
+           main() dans la section finale : fichier en argv[1], sinon
+           stdin (sentinelle "EOF" sur sa propre ligne, ou fin de flux). */
+        printf("int read_whole_file(char* path, char* buf, int cap) {\n");
+        printf("    char* mode = \"r\";\n");
+        printf("    char* f = fopen(path, mode);\n");
+        printf("    if (f == null) { return -1; }\n");
+        printf("    int off = 0;\n");
+        printf("    char* got = fgets(buf + off, cap - off, f);\n");
+        printf("    while (got != null) {\n");
+        printf("        off = off + cast<int>(strlen(buf + off));\n");
+        printf("        if (cap - off < 2) { got = null; } else { got = fgets(buf + off, cap - off, f); }\n");
+        printf("    }\n");
+        printf("    fclose(f);\n");
+        printf("    buf[off] = cast<char>(0);\n");
+        printf("    return off;\n");
+        printf("}\n\n");
+        printf("int main(int argc, char** argv) {\n");
+        printf("    char[65536] buf;\n    int off = 0;\n\n");
+        printf("    if (argc > 1) {\n");
+        printf("        int n = read_whole_file(argv[1], &buf, 65536);\n");
+        printf("        if (n < 0) { printf(\"Erreur : impossible de lire '%%s'\\n\", argv[1]); return 1; }\n");
+        printf("    } else {\n");
+        printf("        int done = 0;\n");
+        printf("        while (done == 0) {\n");
+        printf("            char[1024] line;\n            int lp = 0;\n");
+        printf("            int c = getchar();\n");
+        printf("            while (c != -1 && cast<char>(c) != cast<char>(10) && lp < 1023) { line[lp] = cast<char>(c); lp = lp + 1; c = getchar(); }\n");
+        printf("            line[lp] = cast<char>(0);\n");
+        printf("            if (c == -1 && lp == 0) { done = 1; }\n");
+        printf("            else if (lp == 3 && line[0] == 'E' && line[1] == 'O' && line[2] == 'F') { done = 1; }\n");
+        printf("            else {\n");
+        printf("                int i = 0;\n                while (i < lp && off < 65535) { buf[off] = line[i]; off = off + 1; i = i + 1; }\n");
+        printf("                if (off < 65535) { buf[off] = cast<char>(10); off = off + 1; }\n");
+        printf("                if (c == -1) { done = 1; }\n");
+        printf("            }\n");
+        printf("        }\n");
+        printf("        buf[off] = cast<char>(0);\n");
+        printf("    }\n\n");
+        printf("    GenScanner sc;\n    sc.init(&buf);\n\n");
+        printf("    int tok = sc.yylex();\n");
+        printf("    while (tok != -1) {\n");
+        printf("        printf(\"token = %%d  (yytext = '%%s')\\n\", tok, &sc.yytext_buf);\n");
+        printf("        tok = sc.yylex();\n");
+        printf("    }\n");
+        printf("    return 0;\n");
+        printf("}\n");
+    }
+}
+
+/* ===========================================================
+ * FICHIER INTERMEDIAIRE DE TOKENS (pour matyacc)
+ * ===========================================================
+ * Format simple "NOM id", une paire par ligne -- matyacc lira ce
+ * fichier pour connaitre l'univers des terminaux sans avoir a
+ * reparser la spec .max lexicale.
+ * =========================================================== */
+void gen_tokens_file(MaxFile* spec) {
+    printf("# Fichier de tokens genere par matlex (round 5) -- pour matyacc\n");
+    int i = 0;
+    while (i < spec.token_count) {
+        printf("%s %d\n", &spec.tokens[i].name, i);
+        i = i + 1;
+    }
+}
+
+str default_demo_max_spec() {
+    return "%{\n/* prologue de demonstration */\n%}\n\n%token TOK_IDENT TOK_INT\n\n%%\n[ \t\n\r]+ { int skip = 0; }\n[a-zA-Z_]+ { return TOK_IDENT(); }\n[0-9]+ { return TOK_INT(); }\n%%\n";
+}
+
+int main(int argc, char** argv) {
+    char[65536] spec_buf;
+    str spec_text;
+
+    if (argc > 1) {
+        int n = read_whole_file(argv[1], &spec_buf, 65536);
+        if (n < 0) {
+            printf("Erreur : impossible de lire '%s'\n", argv[1]);
+            return 1;
+        }
+        spec_text = &spec_buf;
+    } else {
+        spec_text = default_demo_max_spec();
+    }
+
+    MaxFile spec;
+    MaxParser mp;
+    mp.init(spec_text.data());
+    mp.parse(&spec);
+
+    printf("=== matlex Round 5 : spec .max analysee ===\n");
+    printf("  prologue  : %d octet(s)\n", spec.prologue_len);
+    printf("  tokens    : %d declare(s)\n", spec.token_count);
+    printf("  regles    : %d\n", spec.rule_count);
+    printf("  epilogue  : %d octet(s)\n\n", spec.epilogue_len);
+
+    NFA nfa;
+    mp.build_nfa(&spec, &nfa);
+
+    DFA dfa;
+    dfa.init();
+    DfaBuilder b;
+    b.init(&nfa, &dfa);
+    b.build();
+
+    DfaMinimizer m;
+    m.init(&dfa);
+    m.minimize();
+    DFA dfa_min;
+    m.build_minimized(&dfa_min);
+
+    printf("=== GENERATED SCANNER START ===\n");
+    gen_scanner_v2(&dfa_min, &spec, "demo");
+    printf("=== GENERATED SCANNER END ===\n");
+
+    printf("=== GENERATED TOKENS START ===\n");
+    gen_tokens_file(&spec);
+    printf("=== GENERATED TOKENS END ===\n");
+
+    return 0;
+}

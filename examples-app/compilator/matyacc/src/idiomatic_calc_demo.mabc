@@ -1,0 +1,366 @@
+/* =====================================================
+ * Parseur genere automatiquement par matyacc (round 5, .may)
+ * Style JCUP -- NE PAS EDITER A LA MAIN
+ * ===================================================== */
+
+import <cstd>
+import <cstring>
+
+/* ---- constantes de token, comme le module 'sym' de CUP ---- */
+enum sym { PLUS, MINUS, STAR, SLASH, LPAREN, RPAREN, NUM }
+
+/* SemVal : valeur semantique 'personnalisable' -- int, str,
+   ou pointeur generique (struct/tableau/pile/arbre/...). */
+struct Symbol { int sym_type; int line; int column; int ivalue; str svalue; }
+struct GenScanner { int dummy; Symbol yylex() { Symbol s; s.sym_type = -1; return s; } }
+
+struct SemVal {
+    int  kind;
+    int  ival;
+    str  sval;
+    rawptr pval;
+}
+
+struct GenParser {
+    int[512] action_tbl;
+    int[512] goto_tbl;
+    int[128] sstack;
+    int sp;
+    SemVal[128] vstack;
+    int vsp;
+
+    void init() {
+        int i = 0;
+        while (i < 512) { self.action_tbl[i] = 0; self.goto_tbl[i] = -1; i = i + 1; }
+        self.action_tbl[4] = 2;
+        self.action_tbl[6] = 3;
+        self.goto_tbl[8] = 3;
+        self.goto_tbl[9] = 4;
+        self.goto_tbl[10] = 5;
+        self.action_tbl[36] = 2;
+        self.action_tbl[38] = 3;
+        self.goto_tbl[40] = 6;
+        self.goto_tbl[41] = 4;
+        self.goto_tbl[42] = 5;
+        self.action_tbl[64] = -9;
+        self.action_tbl[65] = -9;
+        self.action_tbl[66] = -9;
+        self.action_tbl[67] = -9;
+        self.action_tbl[69] = -9;
+        self.action_tbl[71] = -9;
+        self.action_tbl[96] = 8;
+        self.action_tbl[97] = 9;
+        self.action_tbl[103] = -999999;
+        self.action_tbl[128] = -4;
+        self.action_tbl[129] = -4;
+        self.action_tbl[130] = 10;
+        self.action_tbl[131] = 11;
+        self.action_tbl[133] = -4;
+        self.action_tbl[135] = -4;
+        self.action_tbl[160] = -7;
+        self.action_tbl[161] = -7;
+        self.action_tbl[162] = -7;
+        self.action_tbl[163] = -7;
+        self.action_tbl[165] = -7;
+        self.action_tbl[167] = -7;
+        self.action_tbl[192] = 8;
+        self.action_tbl[193] = 9;
+        self.action_tbl[197] = 12;
+        self.action_tbl[228] = 2;
+        self.action_tbl[230] = 3;
+        self.goto_tbl[233] = 12;
+        self.goto_tbl[234] = 5;
+        self.action_tbl[260] = 2;
+        self.action_tbl[262] = 3;
+        self.goto_tbl[265] = 13;
+        self.goto_tbl[266] = 5;
+        self.action_tbl[292] = 2;
+        self.action_tbl[294] = 3;
+        self.goto_tbl[298] = 14;
+        self.action_tbl[324] = 2;
+        self.action_tbl[326] = 3;
+        self.goto_tbl[330] = 15;
+        self.action_tbl[352] = -8;
+        self.action_tbl[353] = -8;
+        self.action_tbl[354] = -8;
+        self.action_tbl[355] = -8;
+        self.action_tbl[357] = -8;
+        self.action_tbl[359] = -8;
+        self.action_tbl[384] = -2;
+        self.action_tbl[385] = -2;
+        self.action_tbl[386] = 10;
+        self.action_tbl[387] = 11;
+        self.action_tbl[389] = -2;
+        self.action_tbl[391] = -2;
+        self.action_tbl[416] = -3;
+        self.action_tbl[417] = -3;
+        self.action_tbl[418] = 10;
+        self.action_tbl[419] = 11;
+        self.action_tbl[421] = -3;
+        self.action_tbl[423] = -3;
+        self.action_tbl[448] = -5;
+        self.action_tbl[449] = -5;
+        self.action_tbl[450] = -5;
+        self.action_tbl[451] = -5;
+        self.action_tbl[453] = -5;
+        self.action_tbl[455] = -5;
+        self.action_tbl[480] = -6;
+        self.action_tbl[481] = -6;
+        self.action_tbl[482] = -6;
+        self.action_tbl[483] = -6;
+        self.action_tbl[485] = -6;
+        self.action_tbl[487] = -6;
+    }
+
+    /* Dispatch de reduction commun (appele par parse() et
+       parse_with_scanner()) : execute l'action de la regle,
+       depile, calcule le GOTO, empile le resultat. */
+    void do_reduce(int rule) {
+        if (rule == 1) {
+            int a = self.vstack[self.vsp - 3 + 0].ival;
+            int b = self.vstack[self.vsp - 3 + 2].ival;
+            int RESULT = 0;
+            { RESULT = a + b; }
+            self.sp = self.sp - 3;
+            self.vsp = self.vsp - 3;
+            int top_state = self.sstack[self.sp - 1];
+            int goto_state = self.goto_tbl[top_state * 32 + 8];
+            self.sstack[self.sp] = goto_state;
+            self.sp = self.sp + 1;
+            SemVal rv;
+            rv.kind = 1;
+            rv.ival = RESULT;
+            self.vstack[self.vsp] = rv;
+            self.vsp = self.vsp + 1;
+        } else if (rule == 2) {
+            int a = self.vstack[self.vsp - 3 + 0].ival;
+            int b = self.vstack[self.vsp - 3 + 2].ival;
+            int RESULT = 0;
+            { RESULT = a - b; }
+            self.sp = self.sp - 3;
+            self.vsp = self.vsp - 3;
+            int top_state = self.sstack[self.sp - 1];
+            int goto_state = self.goto_tbl[top_state * 32 + 8];
+            self.sstack[self.sp] = goto_state;
+            self.sp = self.sp + 1;
+            SemVal rv;
+            rv.kind = 1;
+            rv.ival = RESULT;
+            self.vstack[self.vsp] = rv;
+            self.vsp = self.vsp + 1;
+        } else if (rule == 3) {
+            int a = self.vstack[self.vsp - 1 + 0].ival;
+            int RESULT = 0;
+            { RESULT = a; }
+            self.sp = self.sp - 1;
+            self.vsp = self.vsp - 1;
+            int top_state = self.sstack[self.sp - 1];
+            int goto_state = self.goto_tbl[top_state * 32 + 8];
+            self.sstack[self.sp] = goto_state;
+            self.sp = self.sp + 1;
+            SemVal rv;
+            rv.kind = 1;
+            rv.ival = RESULT;
+            self.vstack[self.vsp] = rv;
+            self.vsp = self.vsp + 1;
+        } else if (rule == 4) {
+            int a = self.vstack[self.vsp - 3 + 0].ival;
+            int b = self.vstack[self.vsp - 3 + 2].ival;
+            int RESULT = 0;
+            { RESULT = a * b; }
+            self.sp = self.sp - 3;
+            self.vsp = self.vsp - 3;
+            int top_state = self.sstack[self.sp - 1];
+            int goto_state = self.goto_tbl[top_state * 32 + 9];
+            self.sstack[self.sp] = goto_state;
+            self.sp = self.sp + 1;
+            SemVal rv;
+            rv.kind = 1;
+            rv.ival = RESULT;
+            self.vstack[self.vsp] = rv;
+            self.vsp = self.vsp + 1;
+        } else if (rule == 5) {
+            int a = self.vstack[self.vsp - 3 + 0].ival;
+            int b = self.vstack[self.vsp - 3 + 2].ival;
+            int RESULT = 0;
+            { RESULT = a / b; }
+            self.sp = self.sp - 3;
+            self.vsp = self.vsp - 3;
+            int top_state = self.sstack[self.sp - 1];
+            int goto_state = self.goto_tbl[top_state * 32 + 9];
+            self.sstack[self.sp] = goto_state;
+            self.sp = self.sp + 1;
+            SemVal rv;
+            rv.kind = 1;
+            rv.ival = RESULT;
+            self.vstack[self.vsp] = rv;
+            self.vsp = self.vsp + 1;
+        } else if (rule == 6) {
+            int a = self.vstack[self.vsp - 1 + 0].ival;
+            int RESULT = 0;
+            { RESULT = a; }
+            self.sp = self.sp - 1;
+            self.vsp = self.vsp - 1;
+            int top_state = self.sstack[self.sp - 1];
+            int goto_state = self.goto_tbl[top_state * 32 + 9];
+            self.sstack[self.sp] = goto_state;
+            self.sp = self.sp + 1;
+            SemVal rv;
+            rv.kind = 1;
+            rv.ival = RESULT;
+            self.vstack[self.vsp] = rv;
+            self.vsp = self.vsp + 1;
+        } else if (rule == 7) {
+            int a = self.vstack[self.vsp - 3 + 1].ival;
+            int RESULT = 0;
+            { RESULT = a; }
+            self.sp = self.sp - 3;
+            self.vsp = self.vsp - 3;
+            int top_state = self.sstack[self.sp - 1];
+            int goto_state = self.goto_tbl[top_state * 32 + 10];
+            self.sstack[self.sp] = goto_state;
+            self.sp = self.sp + 1;
+            SemVal rv;
+            rv.kind = 1;
+            rv.ival = RESULT;
+            self.vstack[self.vsp] = rv;
+            self.vsp = self.vsp + 1;
+        } else if (rule == 8) {
+            int n = self.vstack[self.vsp - 1 + 0].ival;
+            int RESULT = 0;
+            { RESULT = n; }
+            self.sp = self.sp - 1;
+            self.vsp = self.vsp - 1;
+            int top_state = self.sstack[self.sp - 1];
+            int goto_state = self.goto_tbl[top_state * 32 + 10];
+            self.sstack[self.sp] = goto_state;
+            self.sp = self.sp + 1;
+            SemVal rv;
+            rv.kind = 1;
+            rv.ival = RESULT;
+            self.vstack[self.vsp] = rv;
+            self.vsp = self.vsp + 1;
+        }
+    }
+
+    /* Empaquette une valeur de terminal (venant du lexer) en
+       SemVal, selon le type declare de ce terminal. */
+    SemVal pack_terminal(int term, int ival, str sval, rawptr pval) {
+        SemVal sv;
+        if (term == 0) { sv.kind = 0;
+        } else if (term == 1) { sv.kind = 0;
+        } else if (term == 2) { sv.kind = 0;
+        } else if (term == 3) { sv.kind = 0;
+        } else if (term == 4) { sv.kind = 0;
+        } else if (term == 5) { sv.kind = 0;
+        } else if (term == 6) { sv.kind = 1; sv.ival = ival;
+        }
+        return sv;
+    }
+
+    /* Parse une sequence de tokens deja lexee (tokens[i] = id de
+       terminal, values[i] = SemVal associee -- utiliser
+       pack_terminal() pour les construire). Retourne la SemVal
+       finale (kind == -1 en cas d'erreur syntaxique). */
+    SemVal parse(int* tokens, SemVal* values, int token_count) {
+        self.sp = 1; self.sstack[0] = 0; self.vsp = 0;
+        int ti = 0;
+        SemVal result;
+        result.kind = -1;
+        bool done = false;
+        while (!done) {
+            int cur_state = self.sstack[self.sp - 1];
+            int lookahead = tokens[ti];
+            int act = self.action_tbl[cur_state * 32 + lookahead];
+            if (act == 0) {
+                done = true;
+            } else if (act == -999999) {
+                result = self.vstack[self.vsp - 1];
+                done = true;
+            } else if (act > 0) {
+                self.sstack[self.sp] = act - 1;
+                self.sp = self.sp + 1;
+                self.vstack[self.vsp] = values[ti];
+                self.vsp = self.vsp + 1;
+                ti = ti + 1;
+            } else {
+                self.do_reduce(0 - act - 1);
+            }
+        }
+        return result;
+    }
+
+    /* Integration AUTOMATIQUE avec un scanner genere par matlex :
+       pilote sc.yylex() en direct (pas besoin de pre-tokeniser).
+       Suppose l'interface standard matlex (Symbol{sym_type,
+       line,column,ivalue,svalue}, methode yylex()). */
+    SemVal parse_with_scanner(GenScanner* sc) {
+        self.sp = 1; self.sstack[0] = 0; self.vsp = 0;
+        Symbol cur_tok = sc.yylex();
+        SemVal result;
+        result.kind = -1;
+        bool done = false;
+        while (!done) {
+            int cur_state = self.sstack[self.sp - 1];
+            int lookahead = cur_tok.sym_type;
+            if (lookahead == -1) { lookahead = 7; }
+            int act = self.action_tbl[cur_state * 32 + lookahead];
+            if (act == 0) {
+                done = true;
+            } else if (act == -999999) {
+                result = self.vstack[self.vsp - 1];
+                done = true;
+            } else if (act > 0) {
+                self.sstack[self.sp] = act - 1;
+                self.sp = self.sp + 1;
+                rawptr no_ptr = null;
+                self.vstack[self.vsp] = self.pack_terminal(lookahead, cur_tok.ivalue, cur_tok.svalue, no_ptr);
+                self.vsp = self.vsp + 1;
+                cur_tok = sc.yylex();
+            } else {
+                self.do_reduce(0 - act - 1);
+            }
+        }
+        return result;
+    }
+}
+
+
+/* ---------------------------------------------------------------
+ * Pilote de test SEPARE de la grammaire (calc.may ne contient QUE la
+ * grammaire -- convention JCUP standard, contrairement aux premiers
+ * exemples de ce projet qui embarquaient un main() directement dans
+ * le .may via l'extension "%% epilogue"). Ce fichier illustre
+ * comment utiliser le parseur genere depuis un programme normal.
+ * --------------------------------------------------------------- */
+struct ValsHolder { SemVal[16] vals; }
+
+int main() {
+    GenParser p;
+    p.init();
+
+    /* "( 3 + 4 ) * 2 - 5 / 5"  =  ((3+4)*2) - (5/5)  =  14 - 1  =  13 */
+    int[16] toks;
+    ValsHolder vh;
+    str empty = "";
+    rawptr np = null;
+    int n = 0;
+
+    toks[n] = sym.LPAREN; vh.vals[n] = p.pack_terminal(sym.LPAREN, 0, empty, np); n = n + 1;
+    toks[n] = sym.NUM;    vh.vals[n] = p.pack_terminal(sym.NUM, 3, empty, np);    n = n + 1;
+    toks[n] = sym.PLUS;   vh.vals[n] = p.pack_terminal(sym.PLUS, 0, empty, np);   n = n + 1;
+    toks[n] = sym.NUM;    vh.vals[n] = p.pack_terminal(sym.NUM, 4, empty, np);    n = n + 1;
+    toks[n] = sym.RPAREN; vh.vals[n] = p.pack_terminal(sym.RPAREN, 0, empty, np); n = n + 1;
+    toks[n] = sym.STAR;   vh.vals[n] = p.pack_terminal(sym.STAR, 0, empty, np);   n = n + 1;
+    toks[n] = sym.NUM;    vh.vals[n] = p.pack_terminal(sym.NUM, 2, empty, np);    n = n + 1;
+    toks[n] = sym.MINUS;  vh.vals[n] = p.pack_terminal(sym.MINUS, 0, empty, np);  n = n + 1;
+    toks[n] = sym.NUM;    vh.vals[n] = p.pack_terminal(sym.NUM, 5, empty, np);    n = n + 1;
+    toks[n] = sym.SLASH;  vh.vals[n] = p.pack_terminal(sym.SLASH, 0, empty, np);  n = n + 1;
+    toks[n] = sym.NUM;    vh.vals[n] = p.pack_terminal(sym.NUM, 5, empty, np);    n = n + 1;
+    toks[n] = 7;           vh.vals[n] = p.pack_terminal(sym.NUM, 0, empty, np);    n = n + 1;   /* '$' = id 7 */
+
+    SemVal result = p.parse(&toks, &vh.vals, n);
+    printf("( 3 + 4 ) * 2 - 5 / 5 = %d (attendu 13)\n", result.ival);
+
+    return 0;
+}

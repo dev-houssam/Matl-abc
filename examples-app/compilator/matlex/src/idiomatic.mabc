@@ -1,0 +1,711 @@
+/* ===========================================================
+ * matlex — EDITION IDIOMATIQUE (round 8)
+ * ===========================================================
+ * Reecriture du moteur regex -> NFA -> DFA -> minimisation en
+ * utilisant les idiomes MATL-ABC A FOND, plutot que l'esprit
+ * "C avec une autre syntaxe" des rounds 1-7 :
+ *
+ *   - bool (pas int 0/1) pour TOUS les drapeaux/conditions
+ *   - enum + match pour le type de transition (au lieu des entiers
+ *     magiques 0/1/2/3 des rounds precedents) -- les variants d'enum
+ *     sont des int sous le capot (Enum.Variant), mais nommes et
+ *     dispatches via match plutot que des if/else-if empiles
+ *   - for i in range(n) pour toute boucle a BORNE CONNUE A L'AVANCE
+ *     (les boucles a condition d'ARRET dynamique, comme les points
+ *     fixes de cloture, restent des while -- for-range ne s'y prete
+ *     pas)
+ *   - str native (.len(), .data()) plutot que char*+strlen() manuels
+ *     partout ou une vraie chaine (pas un buffer mutable en cours de
+ *     construction) est manipulee
+ *
+ * Perimetre de cette premiere passe idiomatique : le MOTEUR (Frag,
+ * NFA, RegexParser, DFA, DfaBuilder, DfaMinimizer) -- le coeur
+ * algorithmique du projet, le plus impactant a moderniser. La
+ * couche .max/JFlex (rounds 5-7) reste a moderniser dans une passe
+ * ulterieure (voir projects/matlex/docs/README.md, "Reste a faire").
+ *
+ * Oracle de non-regression : les 28 tests du round 1 (Thompson) et
+ * les tests classes/DFA du round 2 sont repris a l'identique cote
+ * RESULTATS attendus -- seule l'IMPLEMENTATION change.
+ * =========================================================== */
+
+import <cstd>
+import <cstring>
+
+enum TransKind { TChar, TEps, TAny, TClass }
+
+struct Frag {
+    int start;
+    int accept;
+}
+
+struct NFA {
+    int  state_count;
+    int  trans_count;
+    int  start;
+    int  accept;
+
+    int[4096]  trans_from;
+    int[4096]  trans_to;
+    char[4096] trans_sym;
+    int[4096]  trans_kind;    /* valeurs = TransKind.T* (enum -> int) */
+    int[4096]  trans_class;
+
+    int        class_count;
+    bool[64]   class_neg;
+    int[64]    class_range_count;
+    char[1024] class_lo;
+    char[1024] class_hi;
+
+    void init() {
+        self.state_count = 0;
+        self.trans_count = 0;
+        self.start = -1;
+        self.accept = -1;
+        self.class_count = 0;
+    }
+
+    int new_state() {
+        int id = self.state_count;
+        self.state_count = id + 1;
+        return id;
+    }
+
+    void add_edge(int from, int to, char sym, int kind) {
+        int i = self.trans_count;
+        self.trans_from[i] = from;
+        self.trans_to[i]   = to;
+        self.trans_sym[i]  = sym;
+        self.trans_kind[i] = kind;
+        self.trans_count   = i + 1;
+    }
+
+    void add_class_edge(int from, int to, int class_id) {
+        int i = self.trans_count;
+        self.trans_from[i]  = from;
+        self.trans_to[i]    = to;
+        self.trans_kind[i]  = TransKind.TClass;
+        self.trans_class[i] = class_id;
+        self.trans_count    = i + 1;
+    }
+
+    int new_class(bool neg) {
+        int id = self.class_count;
+        self.class_neg[id]         = neg;
+        self.class_range_count[id] = 0;
+        self.class_count           = id + 1;
+        return id;
+    }
+
+    void add_class_range(int class_id, char lo, char hi) {
+        int i = self.class_range_count[class_id];
+        self.class_lo[class_id * 16 + i] = lo;
+        self.class_hi[class_id * 16 + i] = hi;
+        self.class_range_count[class_id] = i + 1;
+    }
+
+    bool char_in_class(int class_id, char c) {
+        bool found = false;
+        for i in range(self.class_range_count[class_id]) {
+            char lo = self.class_lo[class_id * 16 + i];
+            char hi = self.class_hi[class_id * 16 + i];
+            if (c >= lo && c <= hi) { found = true; }
+        }
+        if (self.class_neg[class_id]) { return !found; }
+        return found;
+    }
+
+    /* La transition k accepte-t-elle le caractere c ? (kind != TEps) */
+    bool trans_accepts(int k, char c) {
+        match (self.trans_kind[k]) {
+            TransKind.TChar  => { return self.trans_sym[k] == c; }
+            TransKind.TAny   => { return true; }
+            TransKind.TClass => { return self.char_in_class(self.trans_class[k], c); }
+            _ => { return false; }
+        }
+        return false;
+    }
+
+    /* Cloture epsilon in-place. Point fixe : boucle a condition
+       d'arret DYNAMIQUE, reste un while (for-range ne s'applique
+       qu'a une borne connue a l'avance). */
+    void eps_closure(int* set) {
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for i in range(self.trans_count) {
+                if (self.trans_kind[i] == TransKind.TEps) {
+                    int from = self.trans_from[i];
+                    int to   = self.trans_to[i];
+                    if (set[from] == 1 && set[to] == 0) {
+                        set[to] = 1;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Simulation directe (sans DFA) : 'input' est-il integralement
+       reconnu par le langage du NFA ? */
+    bool matches(str input) {
+        int n = input.len();
+        char* buf = input.data();
+
+        int[4096] cur;
+        for i in range(self.state_count) { cur[i] = 0; }
+        cur[self.start] = 1;
+        self.eps_closure(&cur);
+
+        for pos in range(n) {
+            char c = buf[pos];
+            int[4096] nxt;
+            for j in range(self.state_count) { nxt[j] = 0; }
+
+            for k in range(self.trans_count) {
+                if (self.trans_kind[k] != TransKind.TEps) {
+                    if (cur[self.trans_from[k]] == 1 && self.trans_accepts(k, c)) {
+                        nxt[self.trans_to[k]] = 1;
+                    }
+                }
+            }
+            self.eps_closure(&nxt);
+
+            for m in range(self.state_count) { cur[m] = nxt[m]; }
+        }
+
+        return cur[self.accept] == 1;
+    }
+}
+
+struct RegexParser {
+    char* pat;
+    int   pos;
+    int   len;
+    NFA*  nfa;
+
+    void init(str pattern, NFA* target) {
+        self.pat = pattern.data();
+        self.pos = 0;
+        self.len = pattern.len();
+        self.nfa = target;
+    }
+
+    bool at_end() {
+        return self.pos >= self.len;
+    }
+
+    char peek() {
+        if (self.at_end()) { return cast<char>(0); }
+        return self.pat[self.pos];
+    }
+
+    char peek2() {
+        if (self.pos + 1 >= self.len) { return cast<char>(0); }
+        return self.pat[self.pos + 1];
+    }
+
+    char advance() {
+        char c = self.pat[self.pos];
+        self.pos = self.pos + 1;
+        return c;
+    }
+
+    char resolve_escape(char e) {
+        if (e == 't') { return cast<char>(9); }
+        if (e == 'n') { return cast<char>(10); }
+        if (e == 'r') { return cast<char>(13); }
+        return e;
+    }
+
+    /* ---- constructeurs de fragments Thompson ---- */
+
+    Frag frag_char(char c) {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_edge(s, a, c, TransKind.TChar);
+        Frag f; f.start = s; f.accept = a; return f;
+    }
+
+    Frag frag_any() {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_edge(s, a, cast<char>(0), TransKind.TAny);
+        Frag f; f.start = s; f.accept = a; return f;
+    }
+
+    Frag frag_class(int class_id) {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_class_edge(s, a, class_id);
+        Frag f; f.start = s; f.accept = a; return f;
+    }
+
+    Frag frag_concat(Frag a, Frag b) {
+        self.nfa.add_edge(a.accept, b.start, cast<char>(0), TransKind.TEps);
+        Frag f; f.start = a.start; f.accept = b.accept; return f;
+    }
+
+    Frag frag_union(Frag a, Frag b) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), TransKind.TEps);
+        self.nfa.add_edge(s, b.start, cast<char>(0), TransKind.TEps);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), TransKind.TEps);
+        self.nfa.add_edge(b.accept, acc, cast<char>(0), TransKind.TEps);
+        Frag f; f.start = s; f.accept = acc; return f;
+    }
+
+    Frag frag_star(Frag a) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), TransKind.TEps);
+        self.nfa.add_edge(s, acc, cast<char>(0), TransKind.TEps);
+        self.nfa.add_edge(a.accept, a.start, cast<char>(0), TransKind.TEps);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), TransKind.TEps);
+        Frag f; f.start = s; f.accept = acc; return f;
+    }
+
+    Frag frag_plus(Frag a) {
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(a.accept, a.start, cast<char>(0), TransKind.TEps);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), TransKind.TEps);
+        Frag f; f.start = a.start; f.accept = acc; return f;
+    }
+
+    Frag frag_optional(Frag a) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), TransKind.TEps);
+        self.nfa.add_edge(s, acc, cast<char>(0), TransKind.TEps);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), TransKind.TEps);
+        Frag f; f.start = s; f.accept = acc; return f;
+    }
+
+    /* ---- classes : '[' '^'? (char | char'-'char)+ ']' ---- */
+
+    Frag parse_class() {
+        self.advance(); /* '[' */
+        bool neg = false;
+        if (self.peek() == '^') {
+            neg = true;
+            self.advance();
+        }
+        int cid = self.nfa.new_class(neg);
+
+        while (!self.at_end() && self.peek() != ']') {
+            char c1 = self.advance();
+            if (c1 == '\\') { c1 = self.resolve_escape(self.advance()); }
+
+            bool is_range = !self.at_end() && self.peek() == '-'
+                            && self.peek2() != ']' && self.peek2() != cast<char>(0);
+            if (is_range) {
+                self.advance(); /* '-' */
+                char c2 = self.advance();
+                if (c2 == '\\') { c2 = self.resolve_escape(self.advance()); }
+                self.nfa.add_class_range(cid, c1, c2);
+            } else {
+                self.nfa.add_class_range(cid, c1, c1);
+            }
+        }
+        if (self.peek() == ']') { self.advance(); }
+
+        return self.frag_class(cid);
+    }
+
+    /* ---- descente recursive ---- */
+
+    Frag parse_atom() {
+        char c = self.peek();
+        if (c == '(') {
+            self.advance();
+            Frag f = self.parse_union();
+            if (self.peek() == ')') { self.advance(); }
+            return f;
+        }
+        if (c == '[') {
+            return self.parse_class();
+        }
+        if (c == '.') {
+            self.advance();
+            return self.frag_any();
+        }
+        if (c == '\\') {
+            self.advance();
+            char e = self.advance();
+            return self.frag_char(self.resolve_escape(e));
+        }
+        self.advance();
+        return self.frag_char(c);
+    }
+
+    Frag parse_repeat() {
+        Frag a = self.parse_atom();
+        if (!self.at_end()) {
+            char c = self.peek();
+            if (c == '*') { self.advance(); return self.frag_star(a); }
+            if (c == '+') { self.advance(); return self.frag_plus(a); }
+            if (c == '?') { self.advance(); return self.frag_optional(a); }
+        }
+        return a;
+    }
+
+    Frag parse_concat() {
+        Frag left = self.parse_repeat();
+        while (!self.at_end() && self.peek() != '|' && self.peek() != ')') {
+            Frag right = self.parse_repeat();
+            left = self.frag_concat(left, right);
+        }
+        return left;
+    }
+
+    Frag parse_union() {
+        Frag left = self.parse_concat();
+        while (!self.at_end() && self.peek() == '|') {
+            self.advance();
+            Frag right = self.parse_concat();
+            left = self.frag_union(left, right);
+        }
+        return left;
+    }
+
+    void compile() {
+        Frag f = self.parse_union();
+        self.nfa.start  = f.start;
+        self.nfa.accept = f.accept;
+    }
+}
+
+/* ===========================================================
+ * DFA + subset construction (NFA -> DFA)
+ * =========================================================== */
+
+struct DFA {
+    int  state_count;
+    int  start;
+    int[128]   is_final;
+    int[32768] trans;
+
+    void init() {
+        self.state_count = 0;
+        self.start       = -1;
+        for i in range(32768) { self.trans[i] = -1; }
+        for i in range(128)   { self.is_final[i] = 0; }
+    }
+
+    int step(int state, char c) {
+        int b = cast<int>(c);
+        if (b < 0) { return -1; }
+        return self.trans[state * 256 + b];
+    }
+
+    bool matches(str input) {
+        int n = input.len();
+        char* buf = input.data();
+        int state = self.start;
+        for pos in range(n) {
+            if (state == -1) { return false; }
+            state = self.step(state, buf[pos]);
+        }
+        if (state == -1) { return false; }
+        return self.is_final[state] == 1;
+    }
+}
+
+struct DfaBuilder {
+    NFA* nfa;
+    DFA* dfa;
+
+    int[128]   subset_len;
+    int[16384] subset_states;
+
+    void init(NFA* n, DFA* d) {
+        self.nfa = n;
+        self.dfa = d;
+    }
+
+    int set_to_list(int* set, int* out_list) {
+        int len = 0;
+        for i in range(self.nfa.state_count) {
+            if (set[i] == 1) {
+                out_list[len] = i;
+                len = len + 1;
+            }
+        }
+        return len;
+    }
+
+    bool list_equals_subset(int* a, int alen, int subset_id) {
+        if (alen != self.subset_len[subset_id]) { return false; }
+        for i in range(alen) {
+            if (a[i] != self.subset_states[subset_id * 128 + i]) { return false; }
+        }
+        return true;
+    }
+
+    int find_or_add(int* list, int len) {
+        for i in range(self.dfa.state_count) {
+            if (self.list_equals_subset(list, len, i)) { return i; }
+        }
+        int id = self.dfa.state_count;
+        self.dfa.state_count = id + 1;
+        self.subset_len[id] = len;
+        for j in range(len) {
+            self.subset_states[id * 128 + j] = list[j];
+        }
+        bool is_f = false;
+        for k in range(len) {
+            if (list[k] == self.nfa.accept) { is_f = true; }
+        }
+        self.dfa.is_final[id] = is_f;
+        return id;
+    }
+
+    void build() {
+        int[4096] startset;
+        for i in range(self.nfa.state_count) { startset[i] = 0; }
+        startset[self.nfa.start] = 1;
+        self.nfa.eps_closure(&startset);
+
+        int[128] start_list;
+        int start_len = self.set_to_list(&startset, &start_list);
+        self.dfa.start = self.find_or_add(&start_list, start_len);
+
+        bool[128] processed;
+        for p in range(128) { processed[p] = false; }
+
+        bool done = false;
+        while (!done) {
+            int target = -1;
+            for t in range(self.dfa.state_count) {
+                if (!processed[t] && target == -1) { target = t; }
+            }
+            if (target == -1) {
+                done = true;
+            } else {
+                processed[target] = true;
+                int len = self.subset_len[target];
+
+                for octet in range(256) {
+                    int[4096] moveset;
+                    for mi in range(self.nfa.state_count) { moveset[mi] = 0; }
+
+                    bool any_move = false;
+                    for si in range(len) {
+                        int st = self.subset_states[target * 128 + si];
+                        for k in range(self.nfa.trans_count) {
+                            if (self.nfa.trans_kind[k] != TransKind.TEps && self.nfa.trans_from[k] == st) {
+                                if (self.nfa.trans_accepts(k, cast<char>(octet))) {
+                                    moveset[self.nfa.trans_to[k]] = 1;
+                                    any_move = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (any_move) {
+                        self.nfa.eps_closure(&moveset);
+                        int[128] mlist;
+                        int mlen = self.set_to_list(&moveset, &mlist);
+                        int tid = self.find_or_add(&mlist, mlen);
+                        self.dfa.trans[target * 256 + octet] = tid;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* ===========================================================
+ * MINIMISATION DFA (raffinement de partitions)
+ * =========================================================== */
+
+struct DfaMinimizer {
+    DFA* src;
+    int[128] group;
+    int      group_count;
+
+    void init(DFA* d) {
+        self.src = d;
+    }
+
+    void minimize() {
+        int[128] seen_val;
+        int[128] seen_group;
+        int nseen = 0;
+
+        for i in range(self.src.state_count) {
+            int fv = self.src.is_final[i];
+            int found = -1;
+            for j in range(nseen) {
+                if (seen_val[j] == fv) { found = j; }
+            }
+            if (found == -1) {
+                seen_val[nseen]   = fv;
+                seen_group[nseen] = nseen;
+                found = nseen;
+                nseen = nseen + 1;
+            }
+            self.group[i] = seen_group[found];
+        }
+        self.group_count = nseen;
+
+        bool changed = true;
+        while (changed) {
+            int[128] new_group;
+            int[128] rep_state;
+            int rep_count = 0;
+
+            for s in range(self.src.state_count) {
+                int assigned = -1;
+                for g in range(rep_count) {
+                    int r = rep_state[g];
+                    if (assigned == -1 && self.group[r] == self.group[s]) {
+                        bool same = true;
+                        for b in range(256) {
+                            int ts = self.src.trans[s * 256 + b];
+                            int tr = self.src.trans[r * 256 + b];
+                            int gts = -1;
+                            int gtr = -1;
+                            if (ts != -1) { gts = self.group[ts]; }
+                            if (tr != -1) { gtr = self.group[tr]; }
+                            if (gts != gtr) { same = false; }
+                        }
+                        if (same) { assigned = g; }
+                    }
+                }
+                if (assigned == -1) {
+                    rep_state[rep_count] = s;
+                    assigned = rep_count;
+                    rep_count = rep_count + 1;
+                }
+                new_group[s] = assigned;
+            }
+
+            changed = rep_count != self.group_count;
+            self.group_count = rep_count;
+            for k in range(self.src.state_count) { self.group[k] = new_group[k]; }
+        }
+    }
+
+    void build_minimized(DFA* out) {
+        out.init();
+        out.state_count = self.group_count;
+
+        int[128] rep_of_group;
+        for g in range(self.group_count) {
+            int found = -1;
+            for s in range(self.src.state_count) {
+                if (found == -1 && self.group[s] == g) { found = s; }
+            }
+            rep_of_group[g] = found;
+        }
+
+        for g in range(self.group_count) {
+            int rep = rep_of_group[g];
+            out.is_final[g] = self.src.is_final[rep];
+            for b in range(256) {
+                int t = self.src.trans[rep * 256 + b];
+                if (t == -1) {
+                    out.trans[g * 256 + b] = -1;
+                } else {
+                    out.trans[g * 256 + b] = self.group[t];
+                }
+            }
+        }
+
+        out.start = self.group[self.src.start];
+    }
+}
+
+
+/* ---- harnais de test (oracle : memes resultats que rounds 1-2) ---- */
+
+void test_pattern(str pattern, str input, bool expected) {
+    NFA nfa;
+    nfa.init();
+    RegexParser p;
+    p.init(pattern, &nfa);
+    p.compile();
+
+    bool got = nfa.matches(input);
+    str verdict = "OK";
+    if (got != expected) { verdict = "FAIL"; }
+
+    printf("  [%s] /%s/ vs \"%s\" -> %d (attendu %d) [%d etats]\n",
+           verdict.data(), pattern.data(), input.data(), got, expected, nfa.state_count);
+}
+
+void test_pattern_dfa(str pattern, str input, bool expected) {
+    NFA nfa;
+    nfa.init();
+    RegexParser p;
+    p.init(pattern, &nfa);
+    p.compile();
+
+    DFA dfa;
+    dfa.init();
+    DfaBuilder b;
+    b.init(&nfa, &dfa);
+    b.build();
+
+    DfaMinimizer m;
+    m.init(&dfa);
+    m.minimize();
+    DFA dfa_min;
+    m.build_minimized(&dfa_min);
+
+    bool got_nfa = nfa.matches(input);
+    bool got_dfa = dfa_min.matches(input);
+
+    str verdict = "OK";
+    if (got_nfa != expected || got_dfa != expected) { verdict = "FAIL"; }
+
+    printf("  [%s] /%s/ vs \"%s\" -> nfa=%d dfa_min=%d (attendu %d) [NFA %d etats -> DFA min %d etats]\n",
+           verdict.data(), pattern.data(), input.data(), got_nfa, got_dfa, expected,
+           nfa.state_count, dfa_min.state_count);
+}
+
+int main() {
+    printf("=== matlex Round 8 (edition idiomatique) : moteur regex -> NFA -> DFA ===\n\n");
+
+    printf("--- litteraux, concatenation, alternation, quantificateurs (oracle round 1) ---\n");
+    test_pattern("abc", "abc", true);
+    test_pattern("abc", "abd", false);
+    test_pattern("a|b", "a", true);
+    test_pattern("a|b", "c", false);
+    test_pattern("cat|dog", "dog", true);
+    test_pattern("a*", "aaaa", true);
+    test_pattern("a*", "aaab", false);
+    test_pattern("a+", "", false);
+    test_pattern("a+", "aaa", true);
+    test_pattern("colou?r", "color", true);
+    test_pattern("colou?r", "colour", true);
+    test_pattern("(ab)+", "ababab", true);
+    test_pattern("(ab)+", "aba", false);
+    test_pattern("(a|b)*c", "aabbabc", true);
+    test_pattern("a\\*b", "a*b", true);
+
+    printf("\n--- classes et '.' (oracle round 2) ---\n");
+    test_pattern(".", "a", true);
+    test_pattern("a.c", "abc", true);
+    test_pattern("a.c", "ac", false);
+    test_pattern("[a-z]", "m", true);
+    test_pattern("[a-z]", "M", false);
+    test_pattern("[a-zA-Z_][a-zA-Z0-9_]*", "hello_42", true);
+    test_pattern("[^0-9]", "a", true);
+    test_pattern("[^0-9]", "5", false);
+
+    printf("\n--- DFA + minimisation (oracle round 2) ---\n");
+    test_pattern_dfa("abc", "abc", true);
+    test_pattern_dfa("abc", "abd", false);
+    test_pattern_dfa("(a|b)*c", "aabbabc", true);
+    test_pattern_dfa("[a-zA-Z_][a-zA-Z0-9_]*", "variable_1", true);
+    test_pattern_dfa("[0-9]+\\.[0-9]+", "3.14159", true);
+    test_pattern_dfa("[0-9]+\\.[0-9]+", "3.14.15", false);
+    test_pattern_dfa("(a|ab)(c|bcd)", "abcd", true);
+    test_pattern_dfa("(a|ab)(c|bcd)", "ab", false);
+
+    printf("\n=== Fin Round 8 ===\n");
+    return 0;
+}

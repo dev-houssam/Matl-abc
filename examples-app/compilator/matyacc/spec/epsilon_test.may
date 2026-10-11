@@ -1,0 +1,11 @@
+terminal int NUM;
+
+non terminal int optlist;
+
+start with optlist;
+
+optlist ::=
+      /* vide : liste optionnelle */
+      { RESULT = 0; }
+    | optlist:a NUM:n { RESULT = a + n; }
+    ;

@@ -1,0 +1,1228 @@
+/* ===========================================================
+ * matlex — generateur de lexer pour MATL-ABC (equivalent flex/JFlex)
+ * ===========================================================
+ * ROUND 4 : minimisation DFA + spec texte .mlex + generation de code
+ *
+ * Nouveautes round 4 par rapport au round 3 :
+ *   - DfaMinimizer : minimisation par raffinement de partitions
+ *     (variante simple de Moore/Hopcroft -- adaptee a nos automates
+ *     de petite taille, O(iterations * etats^2 * 256) au lieu du
+ *     O(n log n) de Hopcroft, largement suffisant ici). IMPORTANT :
+ *     deux etats acceptants ne sont JAMAIS fusionnes s'ils portent
+ *     des ID DE REGLE differents (contrairement a la minimisation
+ *     "accept/reject" classique a 2 classes) -- sinon on perdrait
+ *     l'information de quel token emettre.
+ *   - SpecParser : format texte simplifie a la flex, une regle par
+ *     ligne "NOM   regex" (commentaires '#', lignes vides ignorees).
+ *     Pas encore de sections %{ %} ni d'actions arbitraires -- prevu
+ *     pour un round ulterieur si besoin.
+ *   - Generation de code : emet du code source MATL-ABC AUTONOME
+ *     (table de transition + is_final "en dur", aucune dependance a
+ *     NFA/RegexParser/DfaBuilder a l'execution) sur stdout -- exactement
+ *     ce que produit flex (un .c) ou JFlex (un .java). Le code genere
+ *     est ensuite COMPILE ET EXECUTE dans ce meme round pour prouver
+ *     qu'il est correct et reellement autonome.
+ * =========================================================== */
+
+import <cstd>
+import <cstring>
+
+struct Frag {
+    int start;
+    int accept;
+}
+
+struct NFA {
+    int  state_count;
+    int  trans_count;
+    int  start;
+    int  accept;
+
+    int[4096]      trans_from;
+    int[4096]      trans_to;
+    char[4096]     trans_sym;
+    int[4096]      trans_kind;   /* 0=char 1=eps 2=any 3=classe */
+    int[4096]      trans_class;  /* id de classe, valide si kind==3 */
+
+    int      class_count;
+    int[64]  class_neg;
+    int[64]  class_range_count;
+    char[1024] class_lo;   /* 64 classes * 16 plages, aplati */
+    char[1024] class_hi;
+
+    int[4096] accept_rule;  /* id de regle pour un etat acceptant, -1 sinon */
+
+    void init() {
+        self.state_count = 0;
+        self.trans_count = 0;
+        self.start       = -1;
+        self.accept      = -1;
+        self.class_count = 0;
+        int i = 0;
+        while (i < 4096) { self.accept_rule[i] = -1; i = i + 1; }
+    }
+
+    int new_state() {
+        int id = self.state_count;
+        self.state_count = self.state_count + 1;
+        return id;
+    }
+
+    void add_edge(int from, int to, char sym, int kind) {
+        int i = self.trans_count;
+        self.trans_from[i]  = from;
+        self.trans_to[i]    = to;
+        self.trans_sym[i]   = sym;
+        self.trans_kind[i]  = kind;
+        self.trans_count    = i + 1;
+    }
+
+    void add_class_edge(int from, int to, int class_id) {
+        int i = self.trans_count;
+        self.trans_from[i]   = from;
+        self.trans_to[i]     = to;
+        self.trans_kind[i]   = 3;
+        self.trans_class[i]  = class_id;
+        self.trans_count     = i + 1;
+    }
+
+    int new_class(int neg) {
+        int id = self.class_count;
+        self.class_neg[id]         = neg;
+        self.class_range_count[id] = 0;
+        self.class_count           = id + 1;
+        return id;
+    }
+
+    void add_class_range(int class_id, char lo, char hi) {
+        int i = self.class_range_count[class_id];
+        self.class_lo[class_id * 16 + i] = lo;
+        self.class_hi[class_id * 16 + i] = hi;
+        self.class_range_count[class_id] = i + 1;
+    }
+
+    int char_in_class(int class_id, char c) {
+        int i = 0;
+        int found = 0;
+        while (i < self.class_range_count[class_id]) {
+            char lo = self.class_lo[class_id * 16 + i];
+            char hi = self.class_hi[class_id * 16 + i];
+            if (c >= lo && c <= hi) { found = 1; }
+            i = i + 1;
+        }
+        if (self.class_neg[class_id] == 1) {
+            if (found == 1) { return 0; }
+            return 1;
+        }
+        return found;
+    }
+
+    /* Est-ce que la transition k accepte le caractere c ? (kind != 1) */
+    int trans_accepts(int k, char c) {
+        int kind = self.trans_kind[k];
+        if (kind == 0) { return self.trans_sym[k] == c; }
+        if (kind == 2) { return 1; }
+        if (kind == 3) { return self.char_in_class(self.trans_class[k], c); }
+        return 0;
+    }
+
+    void eps_closure(int* set) {
+        int changed = 1;
+        while (changed == 1) {
+            changed = 0;
+            int i = 0;
+            while (i < self.trans_count) {
+                if (self.trans_kind[i] == 1) {
+                    int from = self.trans_from[i];
+                    int to   = self.trans_to[i];
+                    if (set[from] == 1 && set[to] == 0) {
+                        set[to] = 1;
+                        changed = 1;
+                    }
+                }
+                i = i + 1;
+            }
+        }
+    }
+
+    int matches(char* input) {
+        int n = cast<int>(strlen(input));
+
+        int[4096] cur;
+        int i = 0;
+        while (i < self.state_count) { cur[i] = 0; i = i + 1; }
+        cur[self.start] = 1;
+        self.eps_closure(&cur);
+
+        int pos = 0;
+        while (pos < n) {
+            char c = input[pos];
+            int[4096] nxt;
+            int j = 0;
+            while (j < self.state_count) { nxt[j] = 0; j = j + 1; }
+
+            int k = 0;
+            while (k < self.trans_count) {
+                if (self.trans_kind[k] != 1) {
+                    if (cur[self.trans_from[k]] == 1 && self.trans_accepts(k, c) == 1) {
+                        nxt[self.trans_to[k]] = 1;
+                    }
+                }
+                k = k + 1;
+            }
+            self.eps_closure(&nxt);
+
+            int m = 0;
+            while (m < self.state_count) { cur[m] = nxt[m]; m = m + 1; }
+            pos = pos + 1;
+        }
+
+        return cur[self.accept];
+    }
+}
+
+struct RegexParser {
+    char* pat;
+    int   pos;
+    int   len;
+    NFA*  nfa;
+
+    void init(char* pattern, NFA* target) {
+        self.pat = pattern;
+        self.pos = 0;
+        self.len = cast<int>(strlen(pattern));
+        self.nfa = target;
+    }
+
+    int at_end() {
+        return self.pos >= self.len;
+    }
+
+    char peek() {
+        if (self.at_end()) return cast<char>(0);
+        return self.pat[self.pos];
+    }
+
+    char peek2() {
+        if (self.pos + 1 >= self.len) return cast<char>(0);
+        return self.pat[self.pos + 1];
+    }
+
+    char advance() {
+        char c = self.pat[self.pos];
+        self.pos = self.pos + 1;
+        return c;
+    }
+
+    /* ---- constructeurs de fragments Thompson ---- */
+
+    Frag frag_char(char c) {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_edge(s, a, c, 0);
+        Frag f;
+        f.start  = s;
+        f.accept = a;
+        return f;
+    }
+
+    Frag frag_any() {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_edge(s, a, cast<char>(0), 2);
+        Frag f;
+        f.start  = s;
+        f.accept = a;
+        return f;
+    }
+
+    Frag frag_class(int class_id) {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_class_edge(s, a, class_id);
+        Frag f;
+        f.start  = s;
+        f.accept = a;
+        return f;
+    }
+
+    Frag frag_concat(Frag a, Frag b) {
+        self.nfa.add_edge(a.accept, b.start, cast<char>(0), 1);
+        Frag f;
+        f.start  = a.start;
+        f.accept = b.accept;
+        return f;
+    }
+
+    Frag frag_union(Frag a, Frag b) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(s, b.start, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        self.nfa.add_edge(b.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = s;
+        f.accept = acc;
+        return f;
+    }
+
+    Frag frag_star(Frag a) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(s, acc, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = s;
+        f.accept = acc;
+        return f;
+    }
+
+    Frag frag_plus(Frag a) {
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(a.accept, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = a.start;
+        f.accept = acc;
+        return f;
+    }
+
+    Frag frag_optional(Frag a) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(s, acc, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = s;
+        f.accept = acc;
+        return f;
+    }
+
+    /* Traduit une lettre d'echappement standard (t/n/r) vers l'octet
+       de controle correspondant ; tout autre caractere s'echappe
+       lui-meme (comportement deja en place au round 1-3). Necessaire
+       pour pouvoir ecrire des patterns comme "[ \t\n\r]+" dans une
+       SPEC TEXTE (round 4) sans devoir y injecter de vrais octets de
+       controle, qui casseraient le decoupage ligne-par-ligne. */
+    char resolve_escape(char e) {
+        if (e == 't') { return cast<char>(9); }
+        if (e == 'n') { return cast<char>(10); }
+        if (e == 'r') { return cast<char>(13); }
+        return e;
+    }
+
+    /* ---- classes : '[' '^'? (char | char'-'char)+ ']' ---- */
+
+    Frag parse_class() {
+        self.advance(); /* '[' */
+        int neg = 0;
+        if (self.peek() == '^') {
+            neg = 1;
+            self.advance();
+        }
+        int cid = self.nfa.new_class(neg);
+
+        while (!self.at_end() && self.peek() != ']') {
+            char c1 = self.advance();
+            if (c1 == '\\') { c1 = self.resolve_escape(self.advance()); }
+
+            if (!self.at_end() && self.peek() == '-' && self.peek2() != ']' && self.peek2() != cast<char>(0)) {
+                self.advance(); /* '-' */
+                char c2 = self.advance();
+                if (c2 == '\\') { c2 = self.resolve_escape(self.advance()); }
+                self.nfa.add_class_range(cid, c1, c2);
+            } else {
+                self.nfa.add_class_range(cid, c1, c1);
+            }
+        }
+        if (self.peek() == ']') { self.advance(); }
+
+        return self.frag_class(cid);
+    }
+
+    /* ---- descente recursive ---- */
+
+    Frag parse_atom() {
+        char c = self.peek();
+        if (c == '(') {
+            self.advance();
+            Frag f = self.parse_union();
+            if (self.peek() == ')') { self.advance(); }
+            return f;
+        }
+        if (c == '[') {
+            return self.parse_class();
+        }
+        if (c == '.') {
+            self.advance();
+            return self.frag_any();
+        }
+        if (c == '\\') {
+            self.advance();
+            char e = self.advance();
+            return self.frag_char(self.resolve_escape(e));
+        }
+        self.advance();
+        return self.frag_char(c);
+    }
+
+    Frag parse_repeat() {
+        Frag a = self.parse_atom();
+        if (!self.at_end()) {
+            char c = self.peek();
+            if (c == '*') { self.advance(); return self.frag_star(a); }
+            if (c == '+') { self.advance(); return self.frag_plus(a); }
+            if (c == '?') { self.advance(); return self.frag_optional(a); }
+        }
+        return a;
+    }
+
+    Frag parse_concat() {
+        Frag left = self.parse_repeat();
+        while (!self.at_end() && self.peek() != '|' && self.peek() != ')') {
+            Frag right = self.parse_repeat();
+            left = self.frag_concat(left, right);
+        }
+        return left;
+    }
+
+    Frag parse_union() {
+        Frag left = self.parse_concat();
+        while (!self.at_end() && self.peek() == '|') {
+            self.advance();
+            Frag right = self.parse_concat();
+            left = self.frag_union(left, right);
+        }
+        return left;
+    }
+
+    void compile() {
+        Frag f = self.parse_union();
+        self.nfa.start  = f.start;
+        self.nfa.accept = f.accept;
+    }
+
+    /* Compile 'self.pat' comme fragment INDEPENDANT rattache par
+       epsilon a l'etat START COMMUN du NFA (self.nfa.start, deja
+       cree par l'appelant avant le premier appel a compile_rule).
+       L'etat d'acceptation du fragment est marque avec rule_id.
+       Permet de combiner plusieurs regles dans UN SEUL NFA, ce que
+       compile() (mono-regle) ne fait pas. */
+    void compile_rule(int rule_id) {
+        Frag f = self.parse_union();
+        self.nfa.add_edge(self.nfa.start, f.start, cast<char>(0), 1);
+        self.nfa.accept_rule[f.accept] = rule_id;
+    }
+}
+
+/* ===========================================================
+ * ETAPE B : NFA -> DFA (subset construction)
+ * ===========================================================
+ * DFA a capacite fixe (128 etats max, alphabet = 256 octets).
+ * Chaque etat DFA correspond a un SOUS-ENSEMBLE d'etats NFA
+ * (apres cloture epsilon). On represente ce sous-ensemble comme
+ * une LISTE TRIEE d'ids d'etats NFA (triee naturellement car on
+ * la construit en parcourant les etats NFA dans l'ordre croissant)
+ * plutot qu'un tableau d'appartenance complet -- moins de memoire,
+ * et compare-egalite en O(longueur) au lieu de O(nfa.state_count).
+ * =========================================================== */
+
+struct DFA {
+    int  state_count;
+    int  start;
+    int[128]   is_final;   /* id de regle GAGNANTE pour cet etat, -1 si non acceptant */
+    int[32768] trans;      /* aplati [etat*256 + octet] -> etat ou -1 */
+
+    void init() {
+        self.state_count = 0;
+        self.start       = -1;
+        int i = 0;
+        while (i < 32768) { self.trans[i] = -1; i = i + 1; }
+        i = 0;
+        while (i < 128) { self.is_final[i] = -1; i = i + 1; }
+    }
+
+    int step(int state, char c) {
+        int b = cast<int>(c);
+        if (b < 0) { return -1; }  /* octets >127 non geres (limitation documentee) */
+        return self.trans[state * 256 + b];
+    }
+
+    /* Correspondance PLEINE CHAINE (round 2) : conservee pour tests
+       mono-regle. Retourne 1 si 'input' est integralement reconnu
+       par N'IMPORTE QUELLE regle du DFA, 0 sinon. */
+    int matches(char* input) {
+        int n = cast<int>(strlen(input));
+        int state = self.start;
+        int pos = 0;
+        while (pos < n) {
+            if (state == -1) { return 0; }
+            state = self.step(state, input[pos]);
+            pos = pos + 1;
+        }
+        if (state == -1) { return 0; }
+        if (self.is_final[state] != -1) { return 1; }
+        return 0;
+    }
+}
+
+struct DfaBuilder {
+    NFA* nfa;
+    DFA* dfa;
+
+    int[128]  subset_len;
+    int[16384] subset_states;  /* 128 etats DFA * 128 etats NFA max par sous-ensemble, aplati */
+
+    void init(NFA* n, DFA* d) {
+        self.nfa = n;
+        self.dfa = d;
+    }
+
+    /* Ensemble d'appartenance (taille nfa.state_count) -> liste triee d'ids. */
+    int set_to_list(int* set, int* out_list) {
+        int n = self.nfa.state_count;
+        int i = 0;
+        int len = 0;
+        while (i < n) {
+            if (set[i] == 1) {
+                out_list[len] = i;
+                len = len + 1;
+            }
+            i = i + 1;
+        }
+        return len;
+    }
+
+    int list_equals_subset(int* a, int alen, int subset_id) {
+        if (alen != self.subset_len[subset_id]) { return 0; }
+        int i = 0;
+        while (i < alen) {
+            if (a[i] != self.subset_states[subset_id * 128 + i]) { return 0; }
+            i = i + 1;
+        }
+        return 1;
+    }
+
+    /* Retrouve l'etat DFA correspondant a 'list', ou en cree un nouveau. */
+    int find_or_add(int* list, int len) {
+        int i = 0;
+        while (i < self.dfa.state_count) {
+            if (self.list_equals_subset(list, len, i) == 1) {
+                return i;
+            }
+            i = i + 1;
+        }
+        int id = self.dfa.state_count;
+        self.dfa.state_count = id + 1;
+        self.subset_len[id] = len;
+        int j = 0;
+        while (j < len) {
+            self.subset_states[id * 128 + j] = list[j];
+            j = j + 1;
+        }
+        int k = 0;
+        int best_rule = -1;
+        while (k < len) {
+            int r = self.nfa.accept_rule[list[k]];
+            if (r != -1) {
+                if (best_rule == -1 || r < best_rule) { best_rule = r; }
+            }
+            k = k + 1;
+        }
+        self.dfa.is_final[id] = best_rule;
+        return id;
+    }
+
+    void build() {
+        int[4096] startset;
+        int i = 0;
+        while (i < self.nfa.state_count) { startset[i] = 0; i = i + 1; }
+        startset[self.nfa.start] = 1;
+        self.nfa.eps_closure(&startset);
+
+        int[128] start_list;
+        int start_len = self.set_to_list(&startset, &start_list);
+        self.dfa.start = self.find_or_add(&start_list, start_len);
+
+        int[128] processed;
+        int p = 0;
+        while (p < 128) { processed[p] = 0; p = p + 1; }
+
+        int done = 0;
+        while (done == 0) {
+            int target = -1;
+            int t = 0;
+            while (t < self.dfa.state_count && target == -1) {
+                if (processed[t] == 0) { target = t; }
+                t = t + 1;
+            }
+            if (target == -1) {
+                done = 1;
+            } else {
+                processed[target] = 1;
+                int len = self.subset_len[target];
+
+                int octet = 0;
+                while (octet < 256) {
+                    int[4096] moveset;
+                    int mi = 0;
+                    while (mi < self.nfa.state_count) { moveset[mi] = 0; mi = mi + 1; }
+
+                    int any_move = 0;
+                    int si = 0;
+                    while (si < len) {
+                        int st = self.subset_states[target * 128 + si];
+                        int k = 0;
+                        while (k < self.nfa.trans_count) {
+                            if (self.nfa.trans_kind[k] != 1 && self.nfa.trans_from[k] == st) {
+                                if (self.nfa.trans_accepts(k, cast<char>(octet)) == 1) {
+                                    moveset[self.nfa.trans_to[k]] = 1;
+                                    any_move = 1;
+                                }
+                            }
+                            k = k + 1;
+                        }
+                        si = si + 1;
+                    }
+
+                    if (any_move == 1) {
+                        self.nfa.eps_closure(&moveset);
+                        int[128] mlist;
+                        int mlen = self.set_to_list(&moveset, &mlist);
+                        int tid = self.find_or_add(&mlist, mlen);
+                        self.dfa.trans[target * 256 + octet] = tid;
+                    }
+
+                    octet = octet + 1;
+                }
+            }
+        }
+    }
+}
+
+/* ===========================================================
+ * MINIMISATION DFA (raffinement de partitions)
+ * ===========================================================
+ * Partition initiale : un groupe par valeur de is_final DISTINCTE
+ * (et non "final vs non-final" comme la minimisation classique) --
+ * deux etats acceptant des regles differentes ne doivent jamais
+ * fusionner. Puis raffinement iteratif : deux etats du meme groupe
+ * sont separes des qu'ils menent, pour un meme octet, vers des
+ * groupes differents. On s'arrete quand plus aucun groupe ne se
+ * scinde (point fixe).
+ * =========================================================== */
+
+struct DfaMinimizer {
+    DFA* src;
+    int[128] group;
+    int group_count;
+
+    void init(DFA* d) {
+        self.src = d;
+    }
+
+    void minimize() {
+        /* partition initiale : par valeur de is_final */
+        int[128] seen_val;
+        int[128] seen_group;
+        int nseen = 0;
+
+        int i = 0;
+        while (i < self.src.state_count) {
+            int fv = self.src.is_final[i];
+            int found = -1;
+            int j = 0;
+            while (j < nseen) {
+                if (seen_val[j] == fv) { found = j; }
+                j = j + 1;
+            }
+            if (found == -1) {
+                seen_val[nseen] = fv;
+                seen_group[nseen] = nseen;
+                found = nseen;
+                nseen = nseen + 1;
+            }
+            self.group[i] = seen_group[found];
+            i = i + 1;
+        }
+        self.group_count = nseen;
+
+        /* raffinement iteratif jusqu'a point fixe */
+        int changed = 1;
+        while (changed == 1) {
+            int[128] new_group;
+            int[128] rep_state;
+            int rep_count = 0;
+
+            int s = 0;
+            while (s < self.src.state_count) {
+                int assigned = -1;
+                int g = 0;
+                while (g < rep_count) {
+                    int r = rep_state[g];
+                    if (assigned == -1 && self.group[r] == self.group[s]) {
+                        int same = 1;
+                        int b = 0;
+                        while (b < 256) {
+                            int ts = self.src.trans[s * 256 + b];
+                            int tr = self.src.trans[r * 256 + b];
+                            int gts = -1;
+                            int gtr = -1;
+                            if (ts != -1) { gts = self.group[ts]; }
+                            if (tr != -1) { gtr = self.group[tr]; }
+                            if (gts != gtr) { same = 0; }
+                            b = b + 1;
+                        }
+                        if (same == 1) { assigned = g; }
+                    }
+                    g = g + 1;
+                }
+                if (assigned == -1) {
+                    rep_state[rep_count] = s;
+                    assigned = rep_count;
+                    rep_count = rep_count + 1;
+                }
+                new_group[s] = assigned;
+                s = s + 1;
+            }
+
+            if (rep_count != self.group_count) { changed = 1; } else { changed = 0; }
+            self.group_count = rep_count;
+            int k = 0;
+            while (k < self.src.state_count) { self.group[k] = new_group[k]; k = k + 1; }
+        }
+    }
+
+    /* Construit le DFA minimise dans 'out' a partir du regroupement
+       calcule par minimize(). Un seul etat representant par groupe. */
+    void build_minimized(DFA* out) {
+        out.init();
+        out.state_count = self.group_count;
+
+        int[128] rep_of_group;
+        int g = 0;
+        while (g < self.group_count) {
+            int found = -1;
+            int s = 0;
+            while (s < self.src.state_count) {
+                if (found == -1 && self.group[s] == g) { found = s; }
+                s = s + 1;
+            }
+            rep_of_group[g] = found;
+            g = g + 1;
+        }
+
+        g = 0;
+        while (g < self.group_count) {
+            int rep = rep_of_group[g];
+            out.is_final[g] = self.src.is_final[rep];
+            int b = 0;
+            while (b < 256) {
+                int t = self.src.trans[rep * 256 + b];
+                if (t == -1) {
+                    out.trans[g * 256 + b] = -1;
+                } else {
+                    out.trans[g * 256 + b] = self.group[t];
+                }
+                b = b + 1;
+            }
+            g = g + 1;
+        }
+
+        out.start = self.group[self.src.start];
+    }
+}
+
+/* ===========================================================
+ * SCANNER : maximal munch multi-regles
+ * =========================================================== */
+
+struct TokenSpan {
+    int rule_id;   /* -2 = erreur lexicale (aucune regle ne matche) */
+    int start;     /* index de debut dans le buffer source */
+    int len;       /* longueur du lexeme */
+}
+
+struct Scanner {
+    DFA*  dfa;
+    char* src;
+    int   pos;
+    int   len;
+
+    void init(DFA* d, char* source) {
+        self.dfa = d;
+        self.src = source;
+        self.pos = 0;
+        self.len = cast<int>(strlen(source));
+    }
+
+    int at_end() {
+        return self.pos >= self.len;
+    }
+
+    /* Un seul token par maximal munch : avance dans le DFA tant que
+       des transitions existent, retient la DERNIERE position ou
+       l'automate etait dans un etat acceptant, puis y retombe. */
+    TokenSpan next_token() {
+        TokenSpan tok;
+        tok.start = self.pos;
+
+        int state     = self.dfa.start;
+        int best_rule = -1;
+        int best_i    = 0;
+        int i         = 0;
+
+        while (self.pos + i < self.len) {
+            char c = self.src[self.pos + i];
+            int nstate = self.dfa.step(state, c);
+            if (nstate == -1) { break; }
+            state = nstate;
+            i = i + 1;
+            if (self.dfa.is_final[state] != -1) {
+                best_rule = self.dfa.is_final[state];
+                best_i    = i;
+            }
+        }
+
+        if (best_rule == -1) {
+            /* Aucune regle n'accepte, meme sur 1 seul caractere :
+               erreur lexicale. On avance de 1 pour permettre une
+               reprise (comportement standard de recuperation). */
+            tok.rule_id = -2;
+            tok.len     = 1;
+            self.pos    = self.pos + 1;
+            return tok;
+        }
+
+        tok.rule_id = best_rule;
+        tok.len     = best_i;
+        self.pos    = self.pos + best_i;
+        return tok;
+    }
+
+    /* Comme next_token(), mais saute silencieusement les tokens de
+       la regle 0 (WHITESPACE par convention dans ce harnais). */
+    TokenSpan next_real_token() {
+        TokenSpan tok = self.next_token();
+        while (tok.rule_id == 0 && self.at_end() == 0) {
+            tok = self.next_token();
+        }
+        return tok;
+    }
+}
+
+/* ===========================================================
+ * SPEC .mlex : format texte simplifie
+ * ===========================================================
+ * Une regle par ligne : "NOM   regex". Lignes vides et commentaires
+ * '#' ignores. L'ID de regle = ordre de declaration (0, 1, 2, ...).
+ * Pas encore de sections %{ %} / actions arbitraires (a la flex) --
+ * prevu pour un round ulterieur si le besoin se confirme.
+ *
+ * Exemple de spec (voir minicalc_spec dans le harnais) :
+ *   # commentaire
+ *   WS      [ \t\n\r]+
+ *   IDENT   [a-zA-Z_][a-zA-Z0-9_]*
+ *   INT     [0-9]+
+ * =========================================================== */
+
+struct RuleSpec {
+    char[32] name;
+    char[64] pattern;
+}
+
+struct SpecParser {
+    char* text;
+    int   pos;
+    int   len;
+
+    RuleSpec[32] rules;
+    int          rule_count;
+
+    void init(char* spec_text) {
+        self.text       = spec_text;
+        self.pos        = 0;
+        self.len        = cast<int>(strlen(spec_text));
+        self.rule_count = 0;
+    }
+
+    int at_end() {
+        return self.pos >= self.len;
+    }
+
+    char peek() {
+        if (self.at_end()) return cast<char>(0);
+        return self.text[self.pos];
+    }
+
+    char advance() {
+        char c = self.text[self.pos];
+        self.pos = self.pos + 1;
+        return c;
+    }
+
+    int is_inline_ws(char c) {
+        return c == ' ' || c == cast<char>(9);
+    }
+
+    void skip_inline_ws() {
+        while (!self.at_end() && self.is_inline_ws(self.peek())) { self.advance(); }
+    }
+
+    void parse() {
+        while (!self.at_end()) {
+            self.skip_inline_ws();
+            if (!self.at_end()) {
+                char c = self.peek();
+                if (c == cast<char>(10) || c == cast<char>(13)) {
+                    self.advance();
+                } else if (c == '#') {
+                    while (!self.at_end() && self.peek() != cast<char>(10)) { self.advance(); }
+                } else {
+                    /* NOM (jusqu'au premier espace/tab) */
+                    int ns = self.pos;
+                    while (!self.at_end() && self.is_inline_ws(self.peek()) == 0 && self.peek() != cast<char>(10)) {
+                        self.advance();
+                    }
+                    int ne = self.pos;
+                    self.skip_inline_ws();
+
+                    /* PATTERN : reste de la ligne (jusqu'a '\n' ou fin) */
+                    int ps = self.pos;
+                    while (!self.at_end() && self.peek() != cast<char>(10)) { self.advance(); }
+                    int pe = self.pos;
+
+                    int rid = self.rule_count;
+
+                    int nlen = ne - ns;
+                    if (nlen > 31) { nlen = 31; }
+                    int i = 0;
+                    while (i < nlen) { self.rules[rid].name[i] = self.text[ns + i]; i = i + 1; }
+                    self.rules[rid].name[nlen] = cast<char>(0);
+
+                    int plen = pe - ps;
+                    if (plen > 0 && self.text[ps + plen - 1] == cast<char>(13)) { plen = plen - 1; }
+                    if (plen > 63) { plen = 63; }
+                    i = 0;
+                    while (i < plen) { self.rules[rid].pattern[i] = self.text[ps + i]; i = i + 1; }
+                    self.rules[rid].pattern[plen] = cast<char>(0);
+
+                    self.rule_count = rid + 1;
+
+                    if (!self.at_end()) { self.advance(); }
+                }
+            }
+        }
+    }
+
+    /* Compile toutes les regles de la spec dans un NFA combine. */
+    void build_nfa(NFA* nfa) {
+        nfa.init();
+        nfa.start = nfa.new_state();
+
+        RegexParser p;
+        int i = 0;
+        while (i < self.rule_count) {
+            p.init(&self.rules[i].pattern, nfa);
+            p.compile_rule(i);
+            i = i + 1;
+        }
+    }
+}
+
+/* ---- harnais de test ---- */
+
+str rule_name(int r) {
+    if (r == 0)  return "WS";
+    if (r == 1)  return "IDENT";
+    if (r == 2)  return "FLOAT";
+    if (r == 3)  return "INT";
+    if (r == 4)  return "PLUS";
+    if (r == 5)  return "MINUS";
+    if (r == 6)  return "STAR";
+    if (r == 7)  return "SLASH";
+    if (r == 8)  return "LPAREN";
+    if (r == 9)  return "RPAREN";
+    if (r == 10) return "ASSIGN";
+    if (r == 11) return "SEMI";
+    if (r == -2) return "ERREUR";
+    return "?";
+}
+
+/* Construit le NFA combine (12 regles) pour le petit langage de
+   demonstration MiniCalc : identifiants, entiers, flottants,
+   operateurs arithmetiques, parentheses, affectation, point-virgule. */
+void build_minicalc_nfa(NFA* nfa) {
+    nfa.init();
+    nfa.start = nfa.new_state();
+
+    RegexParser p;
+
+    p.init("[ \t\n\r]+", nfa);              p.compile_rule(0);  /* WS */
+    p.init("[a-zA-Z_][a-zA-Z0-9_]*", nfa);  p.compile_rule(1);  /* IDENT */
+    p.init("[0-9]+\\.[0-9]+", nfa);         p.compile_rule(2);  /* FLOAT (avant INT : plus longue correspondance de toute facon) */
+    p.init("[0-9]+", nfa);                  p.compile_rule(3);  /* INT */
+    p.init("\\+", nfa);                     p.compile_rule(4);  /* PLUS */
+    p.init("-", nfa);                       p.compile_rule(5);  /* MINUS */
+    p.init("\\*", nfa);                     p.compile_rule(6);  /* STAR */
+    p.init("/", nfa);                       p.compile_rule(7);  /* SLASH */
+    p.init("\\(", nfa);                     p.compile_rule(8);  /* LPAREN */
+    p.init("\\)", nfa);                     p.compile_rule(9);  /* RPAREN */
+    p.init("=", nfa);                       p.compile_rule(10); /* ASSIGN */
+    p.init(";", nfa);                       p.compile_rule(11); /* SEMI */
+}
+
+void print_token(char* src, TokenSpan tok) {
+    char[64] buf;
+    int n = tok.len;
+    if (n > 63) { n = 63; }
+    char* from = src + tok.start;
+    int i = 0;
+    while (i < n) { buf[i] = from[i]; i = i + 1; }
+    buf[n] = cast<char>(0);
+
+    printf("  [%2d:%2d] %-7s '%s'\n", tok.start, tok.len, rule_name(tok.rule_id).data(), &buf);
+}
+
+/* Tokenise 'source' entierement et compare la sequence de rule_id
+   obtenue a 'expected' (tableau termine par -99). Les tokens WS
+   sont sautes (comme le ferait un vrai pipeline lexer -> parser). */
+void test_scan(char* label, char* source, int* expected) {
+    NFA nfa;
+    build_minicalc_nfa(&nfa);
+
+    DFA dfa;
+    dfa.init();
+    DfaBuilder b;
+    b.init(&nfa, &dfa);
+    b.build();
+
+    Scanner sc;
+    sc.init(&dfa, source);
+
+    printf("--- %s : \"%s\" ---\n", label, source);
+
+    int ok = 1;
+    int idx = 0;
+    while (sc.at_end() == 0) {
+        TokenSpan tok = sc.next_real_token();
+        print_token(source, tok);
+        if (expected[idx] != -99 && expected[idx] != tok.rule_id) { ok = 0; }
+        idx = idx + 1;
+    }
+
+    if (expected[idx] != -99) { ok = 0; }  /* il restait des tokens attendus non vus */
+
+    str verdict = "OK";
+    if (ok == 0) { verdict = "FAIL"; }
+    printf("  [%s] %d token(s)\n\n", verdict.data(), idx);
+}
+
+/* Verifie que deux DFA (typiquement un DFA et sa version minimisee)
+   produisent EXACTEMENT la meme sequence de tokens sur 'source'. */
+void test_scan_equiv(char* label, DFA* dfa_a, DFA* dfa_b, char* source) {
+    Scanner sa; sa.init(dfa_a, source);
+    Scanner sb; sb.init(dfa_b, source);
+
+    printf("--- %s : \"%s\" ---\n", label, source);
+
+    int ok = 1;
+    while (sa.at_end() == 0 && sb.at_end() == 0) {
+        TokenSpan ta = sa.next_real_token();
+        TokenSpan tb = sb.next_real_token();
+        if (ta.rule_id != tb.rule_id || ta.start != tb.start || ta.len != tb.len) { ok = 0; }
+    }
+    if (sa.at_end() != sb.at_end()) { ok = 0; }
+
+    str verdict = "OK";
+    if (ok == 0) { verdict = "FAIL"; }
+    printf("  [%s] DFA %d etats vs DFA minimise %d etats -- tokens identiques\n\n",
+           verdict.data(), dfa_a.state_count, dfa_b.state_count);
+}
+
+/* La spec MiniCalc au format .mlex texte simplifie (round 4) --
+   equivalente a build_minicalc_nfa() du round 3, mais lue depuis un
+   texte plutot que codee en dur regle par regle. */
+str minicalc_spec_text() {
+    return "# Spec MiniCalc -- format .mlex simplifie\nWS      [ \\t\\n\\r]+\nIDENT   [a-zA-Z_][a-zA-Z0-9_]*\nFLOAT   [0-9]+\\.[0-9]+\nINT     [0-9]+\nPLUS    \\+\nMINUS   -\nSTAR    \\*\nSLASH   /\nLPAREN  \\(\nRPAREN  \\)\nASSIGN  =\nSEMI    ;\n";
+}
+
+/* ===========================================================
+ * GENERATION DE CODE : scanner MATL-ABC autonome
+ * ===========================================================
+ * Emet sur stdout un programme MATL-ABC complet et AUTONOME (aucune
+ * dependance a NFA/RegexParser/DfaBuilder/DfaMinimizer/SpecParser a
+ * l'execution) implementant le scanner pour le DFA fourni. Exactement
+ * ce que produit flex (-> .c) ou JFlex (-> .java) : le texte imprime
+ * ici EST le fichier .mabc a compiler separement.
+ * =========================================================== */
+void gen_scanner(DFA* dfa, SpecParser* spec, char* demo_source) {
+    printf("/* =====================================================\n");
+    printf(" * Scanner genere automatiquement par matlex (round 4)\n");
+    printf(" * NE PAS EDITER A LA MAIN -- regenerer depuis la spec .mlex\n");
+    printf(" * ===================================================== */\n\n");
+    printf("import <cstd>\n");
+    printf("import <cstring>\n\n");
+
+    printf("struct TokenSpan {\n    int rule_id;\n    int start;\n    int len;\n}\n\n");
+
+    printf("struct GenScanner {\n");
+    printf("    char* src;\n    int pos;\n    int len;\n");
+    printf("    int[%d] trans;\n", dfa.state_count * 256);
+    printf("    int[%d] is_final;\n\n", dfa.state_count);
+
+    printf("    void init(char* source) {\n");
+    printf("        self.src = source;\n        self.pos = 0;\n        self.len = cast<int>(strlen(source));\n");
+    printf("        int i = 0;\n        while (i < %d) { self.trans[i] = -1; i = i + 1; }\n", dfa.state_count * 256);
+
+    int s = 0;
+    while (s < dfa.state_count) {
+        int b = 0;
+        while (b < 256) {
+            int t = dfa.trans[s * 256 + b];
+            if (t != -1) {
+                printf("        self.trans[%d] = %d;\n", s * 256 + b, t);
+            }
+            b = b + 1;
+        }
+        s = s + 1;
+    }
+    s = 0;
+    while (s < dfa.state_count) {
+        printf("        self.is_final[%d] = %d;\n", s, dfa.is_final[s]);
+        s = s + 1;
+    }
+    printf("    }\n\n");
+
+    printf("    int at_end() { return self.pos >= self.len; }\n\n");
+
+    printf("    int step(int state, char c) {\n");
+    printf("        int b = cast<int>(c);\n        if (b < 0) { return -1; }\n");
+    printf("        return self.trans[state * 256 + b];\n");
+    printf("    }\n\n");
+
+    printf("    TokenSpan next_token() {\n");
+    printf("        TokenSpan tok;\n        tok.start = self.pos;\n");
+    printf("        int state = %d;\n", dfa.start);
+    printf("        int best_rule = -1;\n        int best_i = 0;\n        int i = 0;\n");
+    printf("        while (self.pos + i < self.len) {\n");
+    printf("            char c = self.src[self.pos + i];\n");
+    printf("            int nstate = self.step(state, c);\n");
+    printf("            if (nstate == -1) { break; }\n");
+    printf("            state = nstate;\n            i = i + 1;\n");
+    printf("            if (self.is_final[state] != -1) { best_rule = self.is_final[state]; best_i = i; }\n");
+    printf("        }\n");
+    printf("        if (best_rule == -1) { tok.rule_id = -2; tok.len = 1; self.pos = self.pos + 1; return tok; }\n");
+    printf("        tok.rule_id = best_rule;\n        tok.len = best_i;\n        self.pos = self.pos + best_i;\n");
+    printf("        return tok;\n");
+    printf("    }\n\n");
+
+    printf("    TokenSpan next_real_token() {\n");
+    printf("        TokenSpan tok = self.next_token();\n");
+    printf("        while (tok.rule_id == 0 && self.at_end() == 0) { tok = self.next_token(); }\n");
+    printf("        return tok;\n");
+    printf("    }\n");
+    printf("}\n\n");
+
+    printf("str gen_rule_name(int r) {\n");
+    int ri = 0;
+    while (ri < spec.rule_count) {
+        printf("    if (r == %d) return \"%s\";\n", ri, &spec.rules[ri].name);
+        ri = ri + 1;
+    }
+    printf("    if (r == -2) return \"ERREUR\";\n");
+    printf("    return \"?\";\n");
+    printf("}\n\n");
+
+    printf("int main() {\n");
+    printf("    GenScanner sc;\n");
+    printf("    sc.init(\"%s\");\n", demo_source);
+    printf("    printf(\"=== Scanner genere : tokenisation de '%s' ===\\n\");\n", demo_source);
+    printf("    while (sc.at_end() == 0) {\n");
+    printf("        TokenSpan tok = sc.next_real_token();\n");
+    printf("        printf(\"  [%%2d:%%2d] %%s\\n\", tok.start, tok.len, gen_rule_name(tok.rule_id).data());\n");
+    printf("    }\n");
+    printf("    return 0;\n");
+    printf("}\n");
+}
+
+int main() {
+    printf("=== matlex Round 4 : minimisation DFA + spec .mlex + generation de code ===\n\n");
+
+    printf("--- regression round 3 (NFA multi-regles + scanner) ---\n");
+
+    int[8] exp1;
+    exp1[0] = 1; exp1[1] = 10; exp1[2] = 3; exp1[3] = 4; exp1[4] = 3; exp1[5] = 11; exp1[6] = -99;
+    test_scan("affectation simple", "x = 3 + 4;", &exp1);
+
+    int[10] exp2;
+    exp2[0] = 1; exp2[1] = 10; exp2[2] = 2; exp2[3] = 6; exp2[4] = 8; exp2[5] = 3;
+    exp2[6] = 5; exp2[7] = 3; exp2[8] = 9; exp2[9] = -99;
+    test_scan("flottant + parentheses", "pi = 3.14 * (2 - 1)", &exp2);
+
+    int[6] exp3;
+    exp3[0] = 1; exp3[1] = 7; exp3[2] = 1; exp3[3] = 11; exp3[4] = -99;
+    test_scan("identifiants et division", "a/b;", &exp3);
+
+    int[4] exp4;
+    exp4[0] = 3; exp4[1] = -2; exp4[2] = 3; exp4[3] = -99;
+    test_scan("erreur lexicale (caractere @)", "1 @ 2", &exp4);
+
+    printf("--- etape A : minimisation DFA ---\n\n");
+
+    NFA nfa1;
+    build_minicalc_nfa(&nfa1);
+    DFA dfa1;
+    dfa1.init();
+    DfaBuilder b1;
+    b1.init(&nfa1, &dfa1);
+    b1.build();
+
+    DFA dfa1min;
+    DfaMinimizer m1;
+    m1.init(&dfa1);
+    m1.minimize();
+    m1.build_minimized(&dfa1min);
+
+    test_scan_equiv("min vs non-min (1)", &dfa1, &dfa1min, "x = 3 + 4;");
+    test_scan_equiv("min vs non-min (2)", &dfa1, &dfa1min, "pi = 3.14 * (2 - 1)");
+    test_scan_equiv("min vs non-min (3)", &dfa1, &dfa1min, "foo_bar123 / baz;");
+
+    printf("--- etape B : spec .mlex texte ---\n\n");
+
+    str spec_text = minicalc_spec_text();
+    SpecParser sp;
+    sp.init(spec_text.data());
+    sp.parse();
+
+    printf("  spec parsee : %d regles\n", sp.rule_count);
+    int ri = 0;
+    while (ri < sp.rule_count) {
+        printf("    regle %2d : %-8s /%s/\n", ri, &sp.rules[ri].name, &sp.rules[ri].pattern);
+        ri = ri + 1;
+    }
+    print("\n");
+
+    NFA nfa2;
+    sp.build_nfa(&nfa2);
+    DFA dfa2;
+    dfa2.init();
+    DfaBuilder b2;
+    b2.init(&nfa2, &dfa2);
+    b2.build();
+
+    test_scan_equiv("spec-driven vs code-en-dur", &dfa1, &dfa2, "x = 3 + 4;");
+    test_scan_equiv("spec-driven vs code-en-dur (2)", &dfa1, &dfa2, "pi = 3.14 * (2 - 1)");
+
+    printf("--- etape C : generation de code (scanner autonome) ---\n\n");
+    printf("=== GENERATED CODE START ===\n");
+    gen_scanner(&dfa1min, &sp, "x = 3 + 4;");
+    printf("=== GENERATED CODE END ===\n");
+
+    printf("\n=== Fin Round 4 ===\n");
+    return 0;
+}

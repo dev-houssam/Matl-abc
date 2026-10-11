@@ -1,0 +1,13 @@
+terminal ADD;
+terminal int NUMBER;
+
+non terminal int expr;
+
+start with expr;
+
+expr ::=
+      ADD NUMBER:a NUMBER:b
+      {
+          RESULT = a + b;
+      }
+    ;

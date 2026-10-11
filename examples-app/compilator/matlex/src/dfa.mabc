@@ -1,0 +1,682 @@
+/* ===========================================================
+ * matlex — generateur de lexer pour MATL-ABC (equivalent flex/JFlex)
+ * ===========================================================
+ * ROUND 2 : classes de caracteres, '.', puis NFA -> DFA
+ *
+ * Nouveautes round 2 (etape A, ce fichier) par rapport au round 1 :
+ *   - '.'          : n'importe quel caractere (any)
+ *   - '[abc]'      : classe (union de caracteres/plages)
+ *   - '[a-z]'      : plage dans une classe
+ *   - '[^...]'     : classe negee
+ *
+ * Changement de representation des transitions : le champ booleen
+ * trans_is_eps (round 1) devient trans_kind (int) :
+ *   0 = caractere litteral (trans_sym)
+ *   1 = epsilon
+ *   2 = any ('.')
+ *   3 = classe (trans_class -> index dans les tables de classes)
+ *
+ * Les classes elles-memes sont stockees dans des tables a part sur
+ * le NFA (class_neg / class_range_count / class_lo / class_hi),
+ * chaque classe pouvant contenir jusqu'a 16 sous-plages. Une classe
+ * est donc verifiee par PREDICAT au moment du matching plutot que
+ * d'etre deroulee en union de fragments Thompson -- ca evite une
+ * explosion du nombre d'etats pour des classes larges (ex [a-zA-Z]).
+ *
+ * DFA -> reporte en etape B (meme fichier round 2, seconde moitie).
+ * =========================================================== */
+
+import <cstd>
+import <cstring>
+
+struct Frag {
+    int start;
+    int accept;
+}
+
+struct NFA {
+    int  state_count;
+    int  trans_count;
+    int  start;
+    int  accept;
+
+    int[4096]      trans_from;
+    int[4096]      trans_to;
+    char[4096]     trans_sym;
+    int[4096]      trans_kind;   /* 0=char 1=eps 2=any 3=classe */
+    int[4096]      trans_class;  /* id de classe, valide si kind==3 */
+
+    int      class_count;
+    int[64]  class_neg;
+    int[64]  class_range_count;
+    char[1024] class_lo;   /* 64 classes * 16 plages, aplati */
+    char[1024] class_hi;
+
+    void init() {
+        self.state_count = 0;
+        self.trans_count = 0;
+        self.start       = -1;
+        self.accept      = -1;
+        self.class_count = 0;
+    }
+
+    int new_state() {
+        int id = self.state_count;
+        self.state_count = self.state_count + 1;
+        return id;
+    }
+
+    void add_edge(int from, int to, char sym, int kind) {
+        int i = self.trans_count;
+        self.trans_from[i]  = from;
+        self.trans_to[i]    = to;
+        self.trans_sym[i]   = sym;
+        self.trans_kind[i]  = kind;
+        self.trans_count    = i + 1;
+    }
+
+    void add_class_edge(int from, int to, int class_id) {
+        int i = self.trans_count;
+        self.trans_from[i]   = from;
+        self.trans_to[i]     = to;
+        self.trans_kind[i]   = 3;
+        self.trans_class[i]  = class_id;
+        self.trans_count     = i + 1;
+    }
+
+    int new_class(int neg) {
+        int id = self.class_count;
+        self.class_neg[id]         = neg;
+        self.class_range_count[id] = 0;
+        self.class_count           = id + 1;
+        return id;
+    }
+
+    void add_class_range(int class_id, char lo, char hi) {
+        int i = self.class_range_count[class_id];
+        self.class_lo[class_id * 16 + i] = lo;
+        self.class_hi[class_id * 16 + i] = hi;
+        self.class_range_count[class_id] = i + 1;
+    }
+
+    int char_in_class(int class_id, char c) {
+        int i = 0;
+        int found = 0;
+        while (i < self.class_range_count[class_id]) {
+            char lo = self.class_lo[class_id * 16 + i];
+            char hi = self.class_hi[class_id * 16 + i];
+            if (c >= lo && c <= hi) { found = 1; }
+            i = i + 1;
+        }
+        if (self.class_neg[class_id] == 1) {
+            if (found == 1) { return 0; }
+            return 1;
+        }
+        return found;
+    }
+
+    /* Est-ce que la transition k accepte le caractere c ? (kind != 1) */
+    int trans_accepts(int k, char c) {
+        int kind = self.trans_kind[k];
+        if (kind == 0) { return self.trans_sym[k] == c; }
+        if (kind == 2) { return 1; }
+        if (kind == 3) { return self.char_in_class(self.trans_class[k], c); }
+        return 0;
+    }
+
+    void eps_closure(int* set) {
+        int changed = 1;
+        while (changed == 1) {
+            changed = 0;
+            int i = 0;
+            while (i < self.trans_count) {
+                if (self.trans_kind[i] == 1) {
+                    int from = self.trans_from[i];
+                    int to   = self.trans_to[i];
+                    if (set[from] == 1 && set[to] == 0) {
+                        set[to] = 1;
+                        changed = 1;
+                    }
+                }
+                i = i + 1;
+            }
+        }
+    }
+
+    int matches(char* input) {
+        int n = cast<int>(strlen(input));
+
+        int[4096] cur;
+        int i = 0;
+        while (i < self.state_count) { cur[i] = 0; i = i + 1; }
+        cur[self.start] = 1;
+        self.eps_closure(&cur);
+
+        int pos = 0;
+        while (pos < n) {
+            char c = input[pos];
+            int[4096] nxt;
+            int j = 0;
+            while (j < self.state_count) { nxt[j] = 0; j = j + 1; }
+
+            int k = 0;
+            while (k < self.trans_count) {
+                if (self.trans_kind[k] != 1) {
+                    if (cur[self.trans_from[k]] == 1 && self.trans_accepts(k, c) == 1) {
+                        nxt[self.trans_to[k]] = 1;
+                    }
+                }
+                k = k + 1;
+            }
+            self.eps_closure(&nxt);
+
+            int m = 0;
+            while (m < self.state_count) { cur[m] = nxt[m]; m = m + 1; }
+            pos = pos + 1;
+        }
+
+        return cur[self.accept];
+    }
+}
+
+struct RegexParser {
+    char* pat;
+    int   pos;
+    int   len;
+    NFA*  nfa;
+
+    void init(char* pattern, NFA* target) {
+        self.pat = pattern;
+        self.pos = 0;
+        self.len = cast<int>(strlen(pattern));
+        self.nfa = target;
+    }
+
+    int at_end() {
+        return self.pos >= self.len;
+    }
+
+    char peek() {
+        if (self.at_end()) return cast<char>(0);
+        return self.pat[self.pos];
+    }
+
+    char peek2() {
+        if (self.pos + 1 >= self.len) return cast<char>(0);
+        return self.pat[self.pos + 1];
+    }
+
+    char advance() {
+        char c = self.pat[self.pos];
+        self.pos = self.pos + 1;
+        return c;
+    }
+
+    /* ---- constructeurs de fragments Thompson ---- */
+
+    Frag frag_char(char c) {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_edge(s, a, c, 0);
+        Frag f;
+        f.start  = s;
+        f.accept = a;
+        return f;
+    }
+
+    Frag frag_any() {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_edge(s, a, cast<char>(0), 2);
+        Frag f;
+        f.start  = s;
+        f.accept = a;
+        return f;
+    }
+
+    Frag frag_class(int class_id) {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_class_edge(s, a, class_id);
+        Frag f;
+        f.start  = s;
+        f.accept = a;
+        return f;
+    }
+
+    Frag frag_concat(Frag a, Frag b) {
+        self.nfa.add_edge(a.accept, b.start, cast<char>(0), 1);
+        Frag f;
+        f.start  = a.start;
+        f.accept = b.accept;
+        return f;
+    }
+
+    Frag frag_union(Frag a, Frag b) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(s, b.start, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        self.nfa.add_edge(b.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = s;
+        f.accept = acc;
+        return f;
+    }
+
+    Frag frag_star(Frag a) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(s, acc, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = s;
+        f.accept = acc;
+        return f;
+    }
+
+    Frag frag_plus(Frag a) {
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(a.accept, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = a.start;
+        f.accept = acc;
+        return f;
+    }
+
+    Frag frag_optional(Frag a) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(s, acc, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = s;
+        f.accept = acc;
+        return f;
+    }
+
+    /* ---- classes : '[' '^'? (char | char'-'char)+ ']' ---- */
+
+    Frag parse_class() {
+        self.advance(); /* '[' */
+        int neg = 0;
+        if (self.peek() == '^') {
+            neg = 1;
+            self.advance();
+        }
+        int cid = self.nfa.new_class(neg);
+
+        while (!self.at_end() && self.peek() != ']') {
+            char c1 = self.advance();
+            if (c1 == '\\') { c1 = self.advance(); }
+
+            if (!self.at_end() && self.peek() == '-' && self.peek2() != ']' && self.peek2() != cast<char>(0)) {
+                self.advance(); /* '-' */
+                char c2 = self.advance();
+                if (c2 == '\\') { c2 = self.advance(); }
+                self.nfa.add_class_range(cid, c1, c2);
+            } else {
+                self.nfa.add_class_range(cid, c1, c1);
+            }
+        }
+        if (self.peek() == ']') { self.advance(); }
+
+        return self.frag_class(cid);
+    }
+
+    /* ---- descente recursive ---- */
+
+    Frag parse_atom() {
+        char c = self.peek();
+        if (c == '(') {
+            self.advance();
+            Frag f = self.parse_union();
+            if (self.peek() == ')') { self.advance(); }
+            return f;
+        }
+        if (c == '[') {
+            return self.parse_class();
+        }
+        if (c == '.') {
+            self.advance();
+            return self.frag_any();
+        }
+        if (c == '\\') {
+            self.advance();
+            char e = self.advance();
+            return self.frag_char(e);
+        }
+        self.advance();
+        return self.frag_char(c);
+    }
+
+    Frag parse_repeat() {
+        Frag a = self.parse_atom();
+        if (!self.at_end()) {
+            char c = self.peek();
+            if (c == '*') { self.advance(); return self.frag_star(a); }
+            if (c == '+') { self.advance(); return self.frag_plus(a); }
+            if (c == '?') { self.advance(); return self.frag_optional(a); }
+        }
+        return a;
+    }
+
+    Frag parse_concat() {
+        Frag left = self.parse_repeat();
+        while (!self.at_end() && self.peek() != '|' && self.peek() != ')') {
+            Frag right = self.parse_repeat();
+            left = self.frag_concat(left, right);
+        }
+        return left;
+    }
+
+    Frag parse_union() {
+        Frag left = self.parse_concat();
+        while (!self.at_end() && self.peek() == '|') {
+            self.advance();
+            Frag right = self.parse_concat();
+            left = self.frag_union(left, right);
+        }
+        return left;
+    }
+
+    void compile() {
+        Frag f = self.parse_union();
+        self.nfa.start  = f.start;
+        self.nfa.accept = f.accept;
+    }
+}
+
+/* ===========================================================
+ * ETAPE B : NFA -> DFA (subset construction)
+ * ===========================================================
+ * DFA a capacite fixe (128 etats max, alphabet = 256 octets).
+ * Chaque etat DFA correspond a un SOUS-ENSEMBLE d'etats NFA
+ * (apres cloture epsilon). On represente ce sous-ensemble comme
+ * une LISTE TRIEE d'ids d'etats NFA (triee naturellement car on
+ * la construit en parcourant les etats NFA dans l'ordre croissant)
+ * plutot qu'un tableau d'appartenance complet -- moins de memoire,
+ * et compare-egalite en O(longueur) au lieu de O(nfa.state_count).
+ * =========================================================== */
+
+struct DFA {
+    int  state_count;
+    int  start;
+    int[128]   is_final;
+    int[32768] trans;   /* aplati [etat*256 + octet] -> etat ou -1 */
+
+    void init() {
+        self.state_count = 0;
+        self.start       = -1;
+        int i = 0;
+        while (i < 32768) { self.trans[i] = -1; i = i + 1; }
+        i = 0;
+        while (i < 128) { self.is_final[i] = 0; i = i + 1; }
+    }
+
+    int step(int state, char c) {
+        int b = cast<int>(c);
+        if (b < 0) { return -1; }  /* octets >127 non geres (limitation documentee) */
+        return self.trans[state * 256 + b];
+    }
+
+    int matches(char* input) {
+        int n = cast<int>(strlen(input));
+        int state = self.start;
+        int pos = 0;
+        while (pos < n) {
+            if (state == -1) { return 0; }
+            state = self.step(state, input[pos]);
+            pos = pos + 1;
+        }
+        if (state == -1) { return 0; }
+        return self.is_final[state];
+    }
+}
+
+struct DfaBuilder {
+    NFA* nfa;
+    DFA* dfa;
+
+    int[128]  subset_len;
+    int[16384] subset_states;  /* 128 etats DFA * 128 etats NFA max par sous-ensemble, aplati */
+
+    void init(NFA* n, DFA* d) {
+        self.nfa = n;
+        self.dfa = d;
+    }
+
+    /* Ensemble d'appartenance (taille nfa.state_count) -> liste triee d'ids. */
+    int set_to_list(int* set, int* out_list) {
+        int n = self.nfa.state_count;
+        int i = 0;
+        int len = 0;
+        while (i < n) {
+            if (set[i] == 1) {
+                out_list[len] = i;
+                len = len + 1;
+            }
+            i = i + 1;
+        }
+        return len;
+    }
+
+    int list_equals_subset(int* a, int alen, int subset_id) {
+        if (alen != self.subset_len[subset_id]) { return 0; }
+        int i = 0;
+        while (i < alen) {
+            if (a[i] != self.subset_states[subset_id * 128 + i]) { return 0; }
+            i = i + 1;
+        }
+        return 1;
+    }
+
+    /* Retrouve l'etat DFA correspondant a 'list', ou en cree un nouveau. */
+    int find_or_add(int* list, int len) {
+        int i = 0;
+        while (i < self.dfa.state_count) {
+            if (self.list_equals_subset(list, len, i) == 1) {
+                return i;
+            }
+            i = i + 1;
+        }
+        int id = self.dfa.state_count;
+        self.dfa.state_count = id + 1;
+        self.subset_len[id] = len;
+        int j = 0;
+        while (j < len) {
+            self.subset_states[id * 128 + j] = list[j];
+            j = j + 1;
+        }
+        int k = 0;
+        int is_f = 0;
+        while (k < len) {
+            if (list[k] == self.nfa.accept) { is_f = 1; }
+            k = k + 1;
+        }
+        self.dfa.is_final[id] = is_f;
+        return id;
+    }
+
+    void build() {
+        int[4096] startset;
+        int i = 0;
+        while (i < self.nfa.state_count) { startset[i] = 0; i = i + 1; }
+        startset[self.nfa.start] = 1;
+        self.nfa.eps_closure(&startset);
+
+        int[128] start_list;
+        int start_len = self.set_to_list(&startset, &start_list);
+        self.dfa.start = self.find_or_add(&start_list, start_len);
+
+        int[128] processed;
+        int p = 0;
+        while (p < 128) { processed[p] = 0; p = p + 1; }
+
+        int done = 0;
+        while (done == 0) {
+            int target = -1;
+            int t = 0;
+            while (t < self.dfa.state_count && target == -1) {
+                if (processed[t] == 0) { target = t; }
+                t = t + 1;
+            }
+            if (target == -1) {
+                done = 1;
+            } else {
+                processed[target] = 1;
+                int len = self.subset_len[target];
+
+                int octet = 0;
+                while (octet < 256) {
+                    int[4096] moveset;
+                    int mi = 0;
+                    while (mi < self.nfa.state_count) { moveset[mi] = 0; mi = mi + 1; }
+
+                    int any_move = 0;
+                    int si = 0;
+                    while (si < len) {
+                        int st = self.subset_states[target * 128 + si];
+                        int k = 0;
+                        while (k < self.nfa.trans_count) {
+                            if (self.nfa.trans_kind[k] != 1 && self.nfa.trans_from[k] == st) {
+                                if (self.nfa.trans_accepts(k, cast<char>(octet)) == 1) {
+                                    moveset[self.nfa.trans_to[k]] = 1;
+                                    any_move = 1;
+                                }
+                            }
+                            k = k + 1;
+                        }
+                        si = si + 1;
+                    }
+
+                    if (any_move == 1) {
+                        self.nfa.eps_closure(&moveset);
+                        int[128] mlist;
+                        int mlen = self.set_to_list(&moveset, &mlist);
+                        int tid = self.find_or_add(&mlist, mlen);
+                        self.dfa.trans[target * 256 + octet] = tid;
+                    }
+
+                    octet = octet + 1;
+                }
+            }
+        }
+    }
+}
+
+/* ---- harnais de test ---- */
+
+void test_pattern(char* pattern, char* input, int expected) {
+    NFA nfa;
+    nfa.init();
+    RegexParser p;
+    p.init(pattern, &nfa);
+    p.compile();
+
+    int got = nfa.matches(input);
+    str verdict = "OK";
+    if (got != expected) { verdict = "FAIL"; }
+
+    printf("  [%s] /%s/ vs \"%s\" -> %d (attendu %d) [%d etats, %d classes]\n",
+           verdict.data(), pattern, input, got, expected, nfa.state_count, nfa.class_count);
+}
+
+/* Compile 'pattern' en NFA PUIS en DFA, verifie que les deux
+   s'accordent avec 'expected' pour 'input'. Affiche la reduction
+   du nombre d'etats (NFA vs DFA) -- interet principal du DFA :
+   matching en O(longueur de l'entree), sans cloture epsilon ni
+   ensemble d'etats a chaque pas. */
+void test_pattern_dfa(char* pattern, char* input, int expected) {
+    NFA nfa;
+    nfa.init();
+    RegexParser p;
+    p.init(pattern, &nfa);
+    p.compile();
+
+    DFA dfa;
+    dfa.init();
+    DfaBuilder b;
+    b.init(&nfa, &dfa);
+    b.build();
+
+    int got_nfa = nfa.matches(input);
+    int got_dfa = dfa.matches(input);
+
+    str verdict = "OK";
+    if (got_nfa != expected || got_dfa != expected || got_nfa != got_dfa) {
+        verdict = "FAIL";
+    }
+
+    printf("  [%s] /%s/ vs \"%s\" -> nfa=%d dfa=%d (attendu %d) [NFA %d etats -> DFA %d etats]\n",
+           verdict.data(), pattern, input, got_nfa, got_dfa, expected, nfa.state_count, dfa.state_count);
+}
+
+int main() {
+    printf("=== matlex Round 2 : classes + '.' + NFA -> DFA ===\n\n");
+
+    printf("--- etape A : classes de caracteres et '.' (simulation NFA) ---\n");
+
+    test_pattern(".", "a", 1);
+    test_pattern(".", "Z", 1);
+    test_pattern(".", "", 0);
+    test_pattern("a.c", "abc", 1);
+    test_pattern("a.c", "aXc", 1);
+    test_pattern("a.c", "ac", 0);
+
+    test_pattern("[abc]", "a", 1);
+    test_pattern("[abc]", "b", 1);
+    test_pattern("[abc]", "d", 0);
+
+    test_pattern("[a-z]", "m", 1);
+    test_pattern("[a-z]", "M", 0);
+    test_pattern("[0-9]", "7", 1);
+    test_pattern("[0-9]", "x", 0);
+    test_pattern("[a-zA-Z_][a-zA-Z0-9_]*", "hello_42", 1);
+    test_pattern("[a-zA-Z_][a-zA-Z0-9_]*", "42hello", 0);
+    test_pattern("[0-9]+", "12345", 1);
+    test_pattern("[0-9]+", "12a45", 0);
+
+    test_pattern("[^0-9]", "a", 1);
+    test_pattern("[^0-9]", "5", 0);
+    test_pattern("[^a-z]+", "ABC123", 1);
+    test_pattern("[^a-z]+", "ABCdef", 0);
+
+    test_pattern("[a-zA-Z_]+ [0-9]+", "count 42", 1);
+    test_pattern("[a-zA-Z_]+ [0-9]+", "count42", 0);
+
+    printf("\n--- etape B : NFA -> DFA (subset construction) ---\n");
+
+    test_pattern_dfa("abc", "abc", 1);
+    test_pattern_dfa("abc", "abd", 0);
+    test_pattern_dfa("a|b", "a", 1);
+    test_pattern_dfa("a|b", "c", 0);
+    test_pattern_dfa("a*", "aaaa", 1);
+    test_pattern_dfa("a+", "", 0);
+    test_pattern_dfa("(a|b)*c", "aabbabc", 1);
+    test_pattern_dfa("(a|b)*c", "aabbab", 0);
+
+    /* cas typiques d'un lexer : identifiants, entiers, flottants */
+    test_pattern_dfa("[a-zA-Z_][a-zA-Z0-9_]*", "variable_1", 1);
+    test_pattern_dfa("[a-zA-Z_][a-zA-Z0-9_]*", "1variable", 0);
+    test_pattern_dfa("[0-9]+", "424242", 1);
+    test_pattern_dfa("[0-9]+\\.[0-9]+", "3.14159", 1);
+    test_pattern_dfa("[0-9]+\\.[0-9]+", "3.14.15", 0);
+    test_pattern_dfa("[0-9]+\\.[0-9]+", "314", 0);
+
+    /* NFA avec beaucoup de non-determinisme (nombreux etats
+       partages par cloture epsilon) : le DFA doit rester correct
+       meme quand plusieurs chemins NFA convergent. */
+    test_pattern_dfa("(a|ab)(c|bcd)", "abcd", 1);
+    test_pattern_dfa("(a|ab)(c|bcd)", "ac", 1);
+    test_pattern_dfa("(a|ab)(c|bcd)", "abc", 1);
+    test_pattern_dfa("(a|ab)(c|bcd)", "ab", 0);
+
+    printf("\n=== Fin Round 2 ===\n");
+    return 0;
+}

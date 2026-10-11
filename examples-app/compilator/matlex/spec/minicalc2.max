@@ -1,0 +1,26 @@
+%{
+/* Prologue : rien de special pour ce petit langage MiniCalc. */
+%}
+
+%token TOK_IDENT TOK_INT TOK_FLOAT TOK_PLUS TOK_MINUS TOK_STAR TOK_SLASH
+%token TOK_LPAREN TOK_RPAREN TOK_ASSIGN TOK_SEMI
+
+LETTRE  = [a-zA-Z_]
+CHIFFRE = [0-9]
+ID      = {LETTRE}({LETTRE}|{CHIFFRE})*
+ENTIER  = {CHIFFRE}+
+
+%%
+[ \t\n\r]+   { int skip = 0; }
+{ID}         { return TOK_IDENT; }
+{ENTIER}\.{ENTIER} { return TOK_FLOAT; }
+{ENTIER}     { return TOK_INT; }
+\+           { return TOK_PLUS; }
+-            { return TOK_MINUS; }
+\*           { return TOK_STAR; }
+/            { return TOK_SLASH; }
+\(           { return TOK_LPAREN; }
+\)           { return TOK_RPAREN; }
+=            { return TOK_ASSIGN; }
+;            { return TOK_SEMI; }
+%%

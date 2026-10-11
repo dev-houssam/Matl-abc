@@ -1,0 +1,16 @@
+terminal PLUS;
+terminal STAR;
+terminal int NUM;
+
+non terminal int expr;
+
+start with expr;
+
+%left PLUS;
+%left STAR;
+
+expr ::=
+      expr:a PLUS expr:b { RESULT = a + b; }
+    | expr:a STAR expr:b { RESULT = a * b; }
+    | NUM:n                { RESULT = n; }
+    ;

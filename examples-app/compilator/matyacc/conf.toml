@@ -1,0 +1,19 @@
+[project]
+name        = "matyacc"
+version     = "0.6.0"
+description = "matyacc Round 6 -- parser code composite (struct/enum), enum sym, exemple AST"
+entry       = "src/idiomatic.mabc"
+
+[types]
+[dependencies]
+
+[backend]
+blas   = false
+lapack = false
+fft    = false
+llvm   = true
+
+[build]
+optimize     = true
+output       = "/tmp/matyacc_out"
+strict_types = true

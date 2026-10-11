@@ -1,0 +1,367 @@
+/* ===========================================================
+ * matyacc — generateur de parser pour MATL-ABC (equivalent bison/menhir)
+ * ===========================================================
+ * ROUND 1 : representation de grammaire + automate LR(0)
+ *           (construction de Thompson... non, ici : closure/goto,
+ *           l'equivalent "construction de l'automate LR(0) canonique"
+ *           du cours de compilation classique -- dragon book, ch.4)
+ *
+ * matyacc complete matlex : la ou matlex transforme une regex en
+ * scanner (DFA), matyacc transforme une grammaire hors-contexte en
+ * PARSEUR (automate a pile, shift-reduce). Les deux outils partagent
+ * la meme philosophie : ecrits en MATL-ABC, generent du MATL-ABC
+ * autonome, testes par un vrai probleme d'ingenierie plutot que des
+ * cas jouets.
+ *
+ * Algorithme retenu : SLR(1) (Simple LR), pas LALR(1) complet.
+ * Raison : SLR(1) reutilise l'automate LR(0) "brut" (closure/goto,
+ * sans propagation de lookahead entre etats) et decide des reductions
+ * via les ensembles FOLLOW -- nettement plus simple a implementer
+ * correctement que LALR(1) (qui demande de fusionner des etats et de
+ * propager des lookaheads), tout en couvrant la grande majorite des
+ * grammaires de langages de programmation usuelles (expressions
+ * arithmetiques, structures de controle, etc). Les grammaires qui
+ * ont besoin de LALR(1) mais pas de SLR(1) sont rares en pratique.
+ *
+ * Grammaire de test (le "classique" du dragon book, ch.4.6/4.7,
+ * volontairement choisi car son automate LR(0) canonique est connu :
+ * EXACTEMENT 12 etats -- un oracle de correction immediat) :
+ *
+ *   0. S' -> E            (regle augmentee, ajoutee automatiquement)
+ *   1. E  -> E + T
+ *   2. E  -> T
+ *   3. T  -> T * F
+ *   4. T  -> F
+ *   5. F  -> ( E )
+ *   6. F  -> id
+ *
+ * =========================================================== */
+
+import <cstd>
+import <cstring>
+
+/* ---- symboles : terminaux et non-terminaux dans un espace unifie ---- */
+
+struct Sym {
+    char[32] name;
+    int      is_terminal;
+}
+
+struct Production {
+    int      lhs;         /* index du symbole non-terminal en tete */
+    int[8]   rhs;         /* indices de symboles du corps (8 max) */
+    int      rhs_len;
+}
+
+struct Grammar {
+    Sym[32] symbols;
+    int     symbol_count;
+    int     start_symbol;   /* index du symbole de depart AUGMENTE (S') */
+
+    Production[32] prods;
+    int            prod_count;
+
+    void init() {
+        self.symbol_count = 0;
+        self.prod_count   = 0;
+    }
+
+    int add_symbol(char* name, int is_term) {
+        int id = self.symbol_count;
+        int i = 0;
+        while (name[i] != cast<char>(0) && i < 31) {
+            self.symbols[id].name[i] = name[i];
+            i = i + 1;
+        }
+        self.symbols[id].name[i] = cast<char>(0);
+        self.symbols[id].is_terminal = is_term;
+        self.symbol_count = id + 1;
+        return id;
+    }
+
+    /* Ajoute une regle lhs -> rhs[0] rhs[1] ... (rhs_len symboles). */
+    int add_prod(int lhs, int* rhs, int rhs_len) {
+        int id = self.prod_count;
+        self.prods[id].lhs = lhs;
+        int i = 0;
+        while (i < rhs_len && i < 8) {
+            self.prods[id].rhs[i] = rhs[i];
+            i = i + 1;
+        }
+        self.prods[id].rhs_len = rhs_len;
+        self.prod_count = id + 1;
+        return id;
+    }
+
+    void print_grammar() {
+        int i = 0;
+        while (i < self.prod_count) {
+            printf("  %2d: %s ->", i, &self.symbols[self.prods[i].lhs].name);
+            int j = 0;
+            while (j < self.prods[i].rhs_len) {
+                printf(" %s", &self.symbols[self.prods[i].rhs[j]].name);
+                j = j + 1;
+            }
+            printf("\n");
+            i = i + 1;
+        }
+    }
+}
+
+/* ---- items et ensembles d'items LR(0) ---- */
+
+struct Item {
+    int prod;
+    int dot;
+}
+
+struct ItemSet {
+    Item[64] items;
+    int      item_count;
+
+    void init() {
+        self.item_count = 0;
+    }
+
+    int contains(int prod, int dot) {
+        int i = 0;
+        while (i < self.item_count) {
+            if (self.items[i].prod == prod && self.items[i].dot == dot) { return 1; }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    /* Ajoute l'item s'il n'est pas deja present. Retourne 1 si ajoute
+       (nouveaute -- utile pour detecter le point fixe de closure()). */
+    int add(int prod, int dot) {
+        if (self.contains(prod, dot) == 1) { return 0; }
+        int id = self.item_count;
+        self.items[id].prod = prod;
+        self.items[id].dot = dot;
+        self.item_count = id + 1;
+        return 1;
+    }
+
+    /* Egalite ENSEMBLISTE (ordre non significatif) -- necessaire car
+       deux chemins differents dans goto() peuvent produire le meme
+       ensemble d'items dans un ordre d'insertion different. */
+    int equals(ItemSet* other) {
+        if (self.item_count != other.item_count) { return 0; }
+        int i = 0;
+        while (i < self.item_count) {
+            if (other.contains(self.items[i].prod, self.items[i].dot) == 0) { return 0; }
+            i = i + 1;
+        }
+        return 1;
+    }
+}
+
+/* Cloture d'un ensemble d'items : tant qu'un item (A -> a . B g) a un
+   non-terminal B juste apres le point, ajoute tous les (B -> . d)
+   pour chaque regle de B -- jusqu'a point fixe. */
+void closure(Grammar* g, ItemSet* iset) {
+    int changed = 1;
+    while (changed == 1) {
+        changed = 0;
+        int i = 0;
+        while (i < iset.item_count) {
+            int p = iset.items[i].prod;
+            int d = iset.items[i].dot;
+            if (d < g.prods[p].rhs_len) {
+                int sym = g.prods[p].rhs[d];
+                if (g.symbols[sym].is_terminal == 0) {
+                    int q = 0;
+                    while (q < g.prod_count) {
+                        if (g.prods[q].lhs == sym) {
+                            if (iset.add(q, 0) == 1) { changed = 1; }
+                        }
+                        q = q + 1;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+}
+
+/* goto(I, X) : deplace le point sur X pour chaque item concerne, puis
+   referme le resultat. 'out' est suppose deja initialise (init()). */
+void goto_set(Grammar* g, ItemSet* iset, int sym, ItemSet* out) {
+    out.init();
+    int i = 0;
+    while (i < iset.item_count) {
+        int p = iset.items[i].prod;
+        int d = iset.items[i].dot;
+        if (d < g.prods[p].rhs_len && g.prods[p].rhs[d] == sym) {
+            out.add(p, d + 1);
+        }
+        i = i + 1;
+    }
+    closure(g, out);
+}
+
+/* ---- automate LR(0) canonique ---- */
+
+struct Automaton {
+    ItemSet[64] states;
+    int         state_count;
+    int[1024]   trans;   /* aplati [etat*32 + symbole] -> etat ou -1 */
+
+    void init() {
+        self.state_count = 0;
+        int i = 0;
+        while (i < 1024) { self.trans[i] = -1; i = i + 1; }
+    }
+
+    int find_or_add(ItemSet* candidate) {
+        int i = 0;
+        while (i < self.state_count) {
+            if (self.states[i].equals(candidate) == 1) { return i; }
+            i = i + 1;
+        }
+        int id = self.state_count;
+        int k = 0;
+        while (k < candidate.item_count) {
+            self.states[id].items[k].prod = candidate.items[k].prod;
+            self.states[id].items[k].dot  = candidate.items[k].dot;
+            k = k + 1;
+        }
+        self.states[id].item_count = candidate.item_count;
+        self.state_count = id + 1;
+        return id;
+    }
+
+    /* Construit la collection canonique d'etats LR(0) pour g, en
+       partant de l'item augmente (regle 0 : S' -> S). */
+    void build(Grammar* g) {
+        self.init();
+
+        ItemSet start;
+        start.init();
+        start.add(0, 0);
+        closure(g, &start);
+        self.find_or_add(&start);
+
+        int[64] processed;
+        int p = 0;
+        while (p < 64) { processed[p] = 0; p = p + 1; }
+
+        int done = 0;
+        while (done == 0) {
+            int target = -1;
+            int t = 0;
+            while (t < self.state_count && target == -1) {
+                if (processed[t] == 0) { target = t; }
+                t = t + 1;
+            }
+            if (target == -1) {
+                done = 1;
+            } else {
+                processed[target] = 1;
+                int sym = 0;
+                while (sym < g.symbol_count) {
+                    ItemSet j;
+                    goto_set(g, &self.states[target], sym, &j);
+                    if (j.item_count > 0) {
+                        int tid = self.find_or_add(&j);
+                        self.trans[target * 32 + sym] = tid;
+                    }
+                    sym = sym + 1;
+                }
+            }
+        }
+    }
+
+    void print_state(Grammar* g, int s) {
+        printf("  --- etat %d (%d item(s)) ---\n", s, self.states[s].item_count);
+        int i = 0;
+        while (i < self.states[s].item_count) {
+            int p = self.states[s].items[i].prod;
+            int d = self.states[s].items[i].dot;
+            printf("    %s ->", &g.symbols[g.prods[p].lhs].name);
+            int j = 0;
+            while (j < g.prods[p].rhs_len) {
+                if (j == d) { printf(" ."); }
+                printf(" %s", &g.symbols[g.prods[p].rhs[j]].name);
+                j = j + 1;
+            }
+            if (d == g.prods[p].rhs_len) { printf(" ."); }
+            printf("\n");
+            i = i + 1;
+        }
+    }
+}
+
+/* ---- construction de la grammaire de test (dragon book) ---- */
+
+void build_dragon_grammar(Grammar* g) {
+    g.init();
+
+    int PLUS  = g.add_symbol("+", 1);
+    int STAR  = g.add_symbol("*", 1);
+    int LPAREN = g.add_symbol("(", 1);
+    int RPAREN = g.add_symbol(")", 1);
+    int ID    = g.add_symbol("id", 1);
+    int DOLLAR = g.add_symbol("$", 1);
+
+    int SP = g.add_symbol("S'", 0);
+    int E  = g.add_symbol("E", 0);
+    int T  = g.add_symbol("T", 0);
+    int F  = g.add_symbol("F", 0);
+
+    g.start_symbol = SP;
+
+    int[8] rhs;
+
+    rhs[0] = E;
+    g.add_prod(SP, &rhs, 1);              /* 0: S' -> E */
+
+    rhs[0] = E; rhs[1] = PLUS; rhs[2] = T;
+    g.add_prod(E, &rhs, 3);               /* 1: E -> E + T */
+
+    rhs[0] = T;
+    g.add_prod(E, &rhs, 1);               /* 2: E -> T */
+
+    rhs[0] = T; rhs[1] = STAR; rhs[2] = F;
+    g.add_prod(T, &rhs, 3);               /* 3: T -> T * F */
+
+    rhs[0] = F;
+    g.add_prod(T, &rhs, 1);               /* 4: T -> F */
+
+    rhs[0] = LPAREN; rhs[1] = E; rhs[2] = RPAREN;
+    g.add_prod(F, &rhs, 3);               /* 5: F -> ( E ) */
+
+    rhs[0] = ID;
+    g.add_prod(F, &rhs, 1);               /* 6: F -> id */
+
+    /* DOLLAR ($ , fin d'entree) n'apparait dans aucune regle mais
+       doit exister comme symbole pour les tables action/goto (round 2). */
+    int unused = DOLLAR;
+}
+
+int main() {
+    printf("=== matyacc Round 1 : grammaire + automate LR(0) ===\n\n");
+
+    Grammar g;
+    build_dragon_grammar(&g);
+
+    printf("Grammaire (%d regles, %d symboles) :\n", g.prod_count, g.symbol_count);
+    g.print_grammar();
+
+    Automaton a;
+    a.build(&g);
+
+    printf("\nAutomate LR(0) : %d etat(s)\n", a.state_count);
+    str verdict = "OK";
+    if (a.state_count != 12) { verdict = "FAIL"; }
+    printf("[%s] attendu 12 etats (grammaire classique du dragon book, ch.4)\n\n", verdict.data());
+
+    int s = 0;
+    while (s < a.state_count) {
+        a.print_state(&g, s);
+        s = s + 1;
+    }
+
+    return 0;
+}

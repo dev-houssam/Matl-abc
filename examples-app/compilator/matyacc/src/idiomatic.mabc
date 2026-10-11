@@ -1,0 +1,1726 @@
+/* ===========================================================
+ * matyacc — generateur de parser pour MATL-ABC (equivalent bison/menhir)
+ * ===========================================================
+ * ROUND 3 : format de spec .may, construction automatique de la
+ * grammaire depuis le texte, et generation de code (parser
+ * autonome avec vraies actions semantiques $$ / $1 / $2 / ...)
+ *
+ * Format .may (miroir du .max de matlex) :
+ *
+ *   %{
+ *       code MATL-ABC verbatim (injecte DANS le corps de la struct
+ *       generee, comme des methodes -- meme principe que matlex
+ *       round 7)
+ *   %}
+ *
+ *   %token NOM1 NOM2 ...      (matyacc EST proprietaire de %token,
+ *                               contrairement a matlex qui l'a retire :
+ *                               separation des responsabilites comme
+ *                               flex/bison -- le lexer ne connait que
+ *                               des entiers, le PARSEUR nomme les
+ *                               types de token)
+ *
+ *   %%
+ *   non_terminal : symbole1 symbole2 ... { action1 }
+ *                | symboleA symboleB     { action2 }
+ *                ;
+ *   ...
+ *   %%
+ *
+ *   code MATL-ABC utilisateur final (typiquement main()).
+ *
+ * La toute PREMIERE regle declaree fixe le symbole de depart de la
+ * grammaire (convention yacc/bison standard) -- une regle augmentee
+ * S' -> depart est ajoutee automatiquement (round 1).
+ *
+ * Actions semantiques : $$ = valeur synthetisee du non-terminal en
+ * tete de regle ; $1, $2, ... = valeur du Ne symbole du corps.
+ * Valeurs limitees a des ENTIERS pour cette premiere version
+ * (limitation assumee, document ci-dessous).
+ * =========================================================== */
+
+import <cstd>
+import <cstring>
+
+/* ---- symboles : terminaux et non-terminaux dans un espace unifie ---- */
+
+/* Associativite d'un terminal (%left/%right/%nonassoc) -- stockee en
+   int (comme tout enum MATL-ABC, cf. round 8/9), mais toujours
+   manipulee via ces constantes nommees plutot que des chiffres bruts. */
+enum Assoc { AssocNone, AssocLeft, AssocRight, AssocNonassoc }
+
+struct Sym {
+    char[32] name;
+    char[32] type_name;   /* "" = pas de valeur semantique (terminal "vide" comme ADD) */
+    bool     is_terminal;
+    int      prec_level;  /* -1 = non declare (via %left/%right/%nonassoc) */
+    int      prec_assoc;  /* valeurs = Assoc.Assoc* (enum -> int) */
+}
+
+struct Production {
+    int      lhs;         /* index du symbole non-terminal en tete */
+    int[8]   rhs;         /* indices de symboles du corps (8 max, epsilon si rhs_len=0) */
+    int      rhs_len;
+    int      prec_level;  /* precedence de la REGLE (dernier terminal du corps, ou -1) */
+    int      prec_assoc;
+}
+
+struct Grammar {
+    Sym[32] symbols;
+    int     symbol_count;
+    int     start_symbol;   /* index du symbole de depart AUGMENTE (S') */
+
+    Production[32] prods;
+    int            prod_count;
+
+    void init() {
+        self.symbol_count = 0;
+        self.prod_count   = 0;
+    }
+
+    int add_symbol(char* name, bool is_term) {
+        return self.add_symbol_typed(name, "", is_term);
+    }
+
+    /* Comme add_symbol, mais avec un TYPE de valeur semantique associe
+       (""  = pas de valeur, "int"/"str" = type primitif, tout autre nom
+       = type "pointeur generique" -- voir SemVal plus loin). */
+    int add_symbol_typed(char* name, char* type_name, bool is_term) {
+        int id = self.symbol_count;
+        int i = 0;
+        while (name[i] != cast<char>(0) && i < 31) {
+            self.symbols[id].name[i] = name[i];
+            i = i + 1;
+        }
+        self.symbols[id].name[i] = cast<char>(0);
+        i = 0;
+        while (type_name[i] != cast<char>(0) && i < 31) {
+            self.symbols[id].type_name[i] = type_name[i];
+            i = i + 1;
+        }
+        self.symbols[id].type_name[i] = cast<char>(0);
+        self.symbols[id].is_terminal = is_term;
+        self.symbols[id].prec_level = -1;
+        self.symbols[id].prec_assoc = Assoc.AssocNone;
+        self.symbol_count = id + 1;
+        return id;
+    }
+
+    void set_prec(int sym_id, int level, int assoc) {
+        self.symbols[sym_id].prec_level = level;
+        self.symbols[sym_id].prec_assoc = assoc;
+    }
+
+    /* Ajoute une regle lhs -> rhs[0] rhs[1] ... (rhs_len symboles, 0
+       pour une production EPSILON -- corps vide, liste/option). La
+       precedence de la regle est celle de son DERNIER terminal du
+       corps (convention yacc), sauf surcharge explicite ulterieure. */
+    int add_prod(int lhs, int* rhs, int rhs_len) {
+        int id = self.prod_count;
+        self.prods[id].lhs = lhs;
+        int i = 0;
+        while (i < rhs_len && i < 8) {
+            self.prods[id].rhs[i] = rhs[i];
+            i = i + 1;
+        }
+        self.prods[id].rhs_len = rhs_len;
+
+        int prec_level = -1;
+        int prec_assoc = Assoc.AssocNone;
+        i = 0;
+        while (i < rhs_len) {
+            int sym = rhs[i];
+            if (self.symbols[sym].is_terminal && self.symbols[sym].prec_level != -1) {
+                prec_level = self.symbols[sym].prec_level;
+                prec_assoc = self.symbols[sym].prec_assoc;
+            }
+            i = i + 1;
+        }
+        self.prods[id].prec_level = prec_level;
+        self.prods[id].prec_assoc = prec_assoc;
+
+        self.prod_count = id + 1;
+        return id;
+    }
+
+    void print_grammar() {
+        int i = 0;
+        while (i < self.prod_count) {
+            printf("  %2d: %s ->", i, &self.symbols[self.prods[i].lhs].name);
+            int j = 0;
+            while (j < self.prods[i].rhs_len) {
+                printf(" %s", &self.symbols[self.prods[i].rhs[j]].name);
+                j = j + 1;
+            }
+            if (self.prods[i].rhs_len == 0) { printf(" /* epsilon */"); }
+            printf("\n");
+            i = i + 1;
+        }
+    }
+}
+
+/* ---- items et ensembles d'items LR(0) ---- */
+
+struct Item {
+    int prod;
+    int dot;
+}
+
+struct ItemSet {
+    Item[64] items;
+    int      item_count;
+
+    void init() {
+        self.item_count = 0;
+    }
+
+    bool contains(int prod, int dot) {
+        for i in range(self.item_count) {
+            if (self.items[i].prod == prod && self.items[i].dot == dot) { return true; }
+        }
+        return false;
+    }
+
+    /* Ajoute l'item s'il n'est pas deja present. Retourne true si
+       ajoute (nouveaute -- utile pour detecter le point fixe de
+       closure()). */
+    bool add(int prod, int dot) {
+        if (self.contains(prod, dot)) { return false; }
+        int id = self.item_count;
+        self.items[id].prod = prod;
+        self.items[id].dot = dot;
+        self.item_count = id + 1;
+        return true;
+    }
+
+    /* Egalite ENSEMBLISTE (ordre non significatif) -- necessaire car
+       deux chemins differents dans goto() peuvent produire le meme
+       ensemble d'items dans un ordre d'insertion different. */
+    bool equals(ItemSet* other) {
+        if (self.item_count != other.item_count) { return false; }
+        for i in range(self.item_count) {
+            if (!other.contains(self.items[i].prod, self.items[i].dot)) { return false; }
+        }
+        return true;
+    }
+}
+
+/* Cloture d'un ensemble d'items : tant qu'un item (A -> a . B g) a un
+   non-terminal B juste apres le point, ajoute tous les (B -> . d)
+   pour chaque regle de B -- jusqu'a point fixe. */
+void closure(Grammar* g, ItemSet* iset) {
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for i in range(iset.item_count) {
+            int p = iset.items[i].prod;
+            int d = iset.items[i].dot;
+            if (d < g.prods[p].rhs_len) {
+                int sym = g.prods[p].rhs[d];
+                if (!g.symbols[sym].is_terminal) {
+                    for q in range(g.prod_count) {
+                        if (g.prods[q].lhs == sym) {
+                            if (iset.add(q, 0)) { changed = true; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* goto(I, X) : deplace le point sur X pour chaque item concerne, puis
+   referme le resultat. 'out' est suppose deja initialise (init()). */
+void goto_set(Grammar* g, ItemSet* iset, int sym, ItemSet* out) {
+    out.init();
+    int i = 0;
+    while (i < iset.item_count) {
+        int p = iset.items[i].prod;
+        int d = iset.items[i].dot;
+        if (d < g.prods[p].rhs_len && g.prods[p].rhs[d] == sym) {
+            out.add(p, d + 1);
+        }
+        i = i + 1;
+    }
+    closure(g, out);
+}
+
+/* ---- automate LR(0) canonique ---- */
+
+struct Automaton {
+    ItemSet[64] states;
+    int         state_count;
+    int[1024]   trans;   /* aplati [etat*32 + symbole] -> etat ou -1 */
+
+    void init() {
+        self.state_count = 0;
+        int i = 0;
+        while (i < 1024) { self.trans[i] = -1; i = i + 1; }
+    }
+
+    int find_or_add(ItemSet* candidate) {
+        for i in range(self.state_count) {
+            if (self.states[i].equals(candidate)) { return i; }
+        }
+        int id = self.state_count;
+        int k = 0;
+        while (k < candidate.item_count) {
+            self.states[id].items[k].prod = candidate.items[k].prod;
+            self.states[id].items[k].dot  = candidate.items[k].dot;
+            k = k + 1;
+        }
+        self.states[id].item_count = candidate.item_count;
+        self.state_count = id + 1;
+        return id;
+    }
+
+    /* Construit la collection canonique d'etats LR(0) pour g, en
+       partant de l'item augmente (regle 0 : S' -> S). */
+    void build(Grammar* g) {
+        self.init();
+
+        ItemSet start;
+        start.init();
+        start.add(0, 0);
+        closure(g, &start);
+        self.find_or_add(&start);
+
+        bool[64] processed;
+        for p in range(64) { processed[p] = false; }
+
+        bool done = false;
+        while (!done) {
+            int target = -1;
+            for t in range(self.state_count) {
+                if (!processed[t] && target == -1) { target = t; }
+            }
+            if (target == -1) {
+                done = true;
+            } else {
+                processed[target] = true;
+                for sym in range(g.symbol_count) {
+                    ItemSet j;
+                    goto_set(g, &self.states[target], sym, &j);
+                    if (j.item_count > 0) {
+                        int tid = self.find_or_add(&j);
+                        self.trans[target * 32 + sym] = tid;
+                    }
+                }
+            }
+        }
+    }
+
+    void print_state(Grammar* g, int s) {
+        printf("  --- etat %d (%d item(s)) ---\n", s, self.states[s].item_count);
+        int i = 0;
+        while (i < self.states[s].item_count) {
+            int p = self.states[s].items[i].prod;
+            int d = self.states[s].items[i].dot;
+            printf("    %s ->", &g.symbols[g.prods[p].lhs].name);
+            int j = 0;
+            while (j < g.prods[p].rhs_len) {
+                if (j == d) { printf(" ."); }
+                printf(" %s", &g.symbols[g.prods[p].rhs[j]].name);
+                j = j + 1;
+            }
+            if (d == g.prods[p].rhs_len) { printf(" ."); }
+            printf("\n");
+            i = i + 1;
+        }
+    }
+}
+
+/* ===========================================================
+ * FIRST / FOLLOW
+ * =========================================================== */
+
+struct SetTables {
+    /* first_set[sym*32 + term]  <=>  term appartient a FIRST(sym) */
+    bool[1024] first_set;
+    /* follow_set[nonterm*32 + term]  <=>  term appartient a FOLLOW(nonterm) */
+    bool[1024] follow_set;
+    /* nullable[sym]  <=>  sym peut deriver la chaine vide (epsilon) */
+    bool[32]   nullable;
+
+    void init() {
+        for i in range(1024) { self.first_set[i] = false; self.follow_set[i] = false; }
+        for i in range(32) { self.nullable[i] = false; }
+    }
+
+    /* Un non-terminal est nullable s'il a une regle A -> epsilon
+       (rhs_len==0), ou une regle A -> X1..Xk ou tous les Xi sont
+       nullables. Point fixe classique. */
+    void compute_nullable(Grammar* g) {
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for p in range(g.prod_count) {
+                int lhs = g.prods[p].lhs;
+                if (!self.nullable[lhs]) {
+                    int n = g.prods[p].rhs_len;
+                    bool all_nullable = true;
+                    for i in range(n) {
+                        if (!self.nullable[g.prods[p].rhs[i]]) { all_nullable = false; }
+                    }
+                    if (all_nullable) {
+                        self.nullable[lhs] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /* FIRST(X) : si X terminal, FIRST(X) = {X}. Si X non-terminal,
+       union des FIRST(Xi) pour chaque regle X -> X1 X2 ... tant que
+       les Xi precedents sont NULLABLES (epsilon-aware, contrairement
+       au round 2 qui ne regardait que le tout premier symbole). */
+    void compute_first(Grammar* g) {
+        for i in range(g.symbol_count) {
+            if (g.symbols[i].is_terminal) {
+                self.first_set[i * 32 + i] = true;
+            }
+        }
+
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for p in range(g.prod_count) {
+                int lhs = g.prods[p].lhs;
+                int n = g.prods[p].rhs_len;
+                int k = 0;
+                bool cont = true;
+                while (k < n && cont) {
+                    int xk = g.prods[p].rhs[k];
+                    for t in range(g.symbol_count) {
+                        if (self.first_set[xk * 32 + t] && !self.first_set[lhs * 32 + t]) {
+                            self.first_set[lhs * 32 + t] = true;
+                            changed = true;
+                        }
+                    }
+                    if (!self.nullable[xk]) { cont = false; }
+                    k = k + 1;
+                }
+            }
+        }
+    }
+
+    /* FOLLOW(A) : $ dans FOLLOW(start_symbol) ; pour chaque regle
+       B -> ... A X1 X2 ..., FIRST(X1) c FOLLOW(A), et si X1 nullable
+       on continue avec X2, etc (epsilon-aware) ; si tout le reste
+       apres A est nullable (ou A est en derniere position),
+       FOLLOW(B) c FOLLOW(A). */
+    void compute_follow(Grammar* g, int start_symbol, int dollar_sym) {
+        self.follow_set[start_symbol * 32 + dollar_sym] = true;
+
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for p in range(g.prod_count) {
+                int lhs = g.prods[p].lhs;
+                int n = g.prods[p].rhs_len;
+                for i in range(n) {
+                    int xi = g.prods[p].rhs[i];
+                    if (!g.symbols[xi].is_terminal) {
+                        int j = i + 1;
+                        bool cont = true;
+                        while (j < n && cont) {
+                            int xj = g.prods[p].rhs[j];
+                            for t in range(g.symbol_count) {
+                                if (self.first_set[xj * 32 + t] && !self.follow_set[xi * 32 + t]) {
+                                    self.follow_set[xi * 32 + t] = true;
+                                    changed = true;
+                                }
+                            }
+                            if (!self.nullable[xj]) { cont = false; }
+                            j = j + 1;
+                        }
+                        if (j == n) {
+                            for t in range(g.symbol_count) {
+                                if (self.follow_set[lhs * 32 + t] && !self.follow_set[xi * 32 + t]) {
+                                    self.follow_set[xi * 32 + t] = true;
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    void print_follow(Grammar* g) {
+        int s = 0;
+        while (s < g.symbol_count) {
+            if (!g.symbols[s].is_terminal) {
+                printf("  FOLLOW(%s) = {", &g.symbols[s].name);
+                int t = 0;
+                int first_printed = 1;
+                while (t < g.symbol_count) {
+                    if (self.follow_set[s * 32 + t]) {
+                        if (first_printed == 0) { printf(", "); }
+                        printf("%s", &g.symbols[t].name);
+                        first_printed = 0;
+                    }
+                    t = t + 1;
+                }
+                printf("}\n");
+            }
+            s = s + 1;
+        }
+    }
+}
+
+/* ===========================================================
+ * TABLE SLR(1) : ACTION (shift/reduce/accept) + GOTO
+ * ===========================================================
+ * Encodage de ACTION[etat][terminal] dans un seul entier :
+ *   0            -> erreur (aucune action)
+ *   n > 0        -> SHIFT vers l'etat (n-1)
+ *   n < 0, != ACCEPT_CODE -> REDUCE par la regle (-(n)-1)
+ *   ACCEPT_CODE  -> ACCEPT
+ * =========================================================== */
+
+const int ACCEPT_CODE = -999999;
+
+/* Decision de resolution d'un conflit shift/reduce, basee sur la
+   precedence/associativite DECLAREE (%left/%right/%nonassoc) --
+   remplace l'ancien encodage 1/0/2/-1 par un enum nomme, dispatche
+   via match aux deux sites d'appel. */
+enum ConflictDecision { PreferShift, PreferReduce, ForceError, NoPrecedence }
+
+int decide_shift_over_reduce(Grammar* g, int term_sym, int rule_id) {
+    int term_prec = g.symbols[term_sym].prec_level;
+    int term_assoc = g.symbols[term_sym].prec_assoc;
+    int rule_prec = g.prods[rule_id].prec_level;
+    if (term_prec == -1 || rule_prec == -1) { return ConflictDecision.NoPrecedence; }
+    if (term_prec > rule_prec) { return ConflictDecision.PreferShift; }
+    if (term_prec < rule_prec) { return ConflictDecision.PreferReduce; }
+    if (term_assoc == Assoc.AssocLeft)  { return ConflictDecision.PreferReduce; }
+    if (term_assoc == Assoc.AssocRight) { return ConflictDecision.PreferShift; }
+    return ConflictDecision.ForceError;
+}
+
+struct SLRTable {
+    int[1024] action;   /* [etat*32 + terminal] */
+    int[1024] goto_tbl;  /* [etat*32 + non-terminal] */
+    int       conflict_count;
+
+    void init() {
+        for i in range(1024) { self.action[i] = 0; self.goto_tbl[i] = -1; }
+        self.conflict_count = 0;
+    }
+
+    void build(Grammar* g, Automaton* a, SetTables* sets, int dollar_sym) {
+        self.init();
+
+        for s in range(a.state_count) {
+            for i in range(a.states[s].item_count) {
+                int p = a.states[s].items[i].prod;
+                int d = a.states[s].items[i].dot;
+
+                if (d < g.prods[p].rhs_len) {
+                    int x = g.prods[p].rhs[d];
+                    if (g.symbols[x].is_terminal) {
+                        int target = a.trans[s * 32 + x];
+                        int code = target + 1;   /* shift, toujours > 0 */
+                        int cell = s * 32 + x;
+                        if (self.action[cell] != 0 && self.action[cell] != code) {
+                            int existing = self.action[cell];
+                            if (existing < 0) {
+                                int rule_id = 0 - existing - 1;
+                                int dec = decide_shift_over_reduce(g, x, rule_id);
+                                match (dec) {
+                                    ConflictDecision.PreferShift => { self.action[cell] = code; }
+                                    ConflictDecision.ForceError  => { self.action[cell] = 0; }
+                                    ConflictDecision.NoPrecedence => {
+                                        self.action[cell] = code;
+                                        printf("  [conflit] etat %d, terminal %s : shift/reduce (pas de precedence declaree) -- SHIFT retenu\n", s, &g.symbols[x].name);
+                                    }
+                                    _ => { }
+                                }
+                            }
+                            self.conflict_count = self.conflict_count + 1;
+                        } else {
+                            self.action[cell] = code;
+                        }
+                    }
+                } else {
+                    if (p == 0) {
+                        int cell = s * 32 + dollar_sym;
+                        self.action[cell] = ACCEPT_CODE;
+                    } else {
+                        int lhs = g.prods[p].lhs;
+                        for t in range(g.symbol_count) {
+                            if (sets.follow_set[lhs * 32 + t]) {
+                                int cell = s * 32 + t;
+                                int code = 0 - (p + 1);   /* reduce, toujours < 0 */
+                                if (self.action[cell] != 0 && self.action[cell] != code) {
+                                    int existing = self.action[cell];
+                                    if (existing > 0) {
+                                        int dec = decide_shift_over_reduce(g, t, p);
+                                        match (dec) {
+                                            ConflictDecision.PreferReduce => { self.action[cell] = code; }
+                                            ConflictDecision.ForceError   => { self.action[cell] = 0; }
+                                            ConflictDecision.NoPrecedence => {
+                                                printf("  [conflit] etat %d, terminal %s : shift/reduce (pas de precedence declaree) -- SHIFT retenu\n", s, &g.symbols[t].name);
+                                            }
+                                            _ => { }
+                                        }
+                                    } else {
+                                        printf("  [conflit] etat %d, terminal %s : reduce/reduce -- premiere regle retenue\n", s, &g.symbols[t].name);
+                                    }
+                                    self.conflict_count = self.conflict_count + 1;
+                                } else {
+                                    self.action[cell] = code;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for s in range(a.state_count) {
+            for nt in range(g.symbol_count) {
+                if (!g.symbols[nt].is_terminal) {
+                    int target = a.trans[s * 32 + nt];
+                    if (target != -1) { self.goto_tbl[s * 32 + nt] = target; }
+                }
+            }
+        }
+    }
+}
+
+/* ===========================================================
+ * SPEC .may : format INSPIRE DE JCUP (pas de bison/yacc classique)
+ * ===========================================================
+ *   parser code {
+ *       code MATL-ABC verbatim, injecte DANS le corps de la struct
+ *       generee (methodes -- meme principe que matlex round 7)
+ *   }
+ *
+ *   terminal ADD;                  <- terminal SANS valeur semantique
+ *   terminal int NUMBER;           <- terminal AVEC valeur typee
+ *
+ *   non terminal int expr;         <- non-terminal, TYPE OBLIGATOIRE
+ *
+ *   start with expr;               <- symbole de depart explicite
+ *
+ *   %left PLUS MINUS;              <- precedence croissante a chaque
+ *   %left STAR SLASH;                 declaration (comme yacc)
+ *
+ *   expr ::=
+ *         ADD NUMBER:a NUMBER:b
+ *         {
+ *             RESULT = a + b;
+ *         }
+ *       | NUMBER:n
+ *         {
+ *             RESULT = n;
+ *         }
+ *       ;
+ *
+ *   %%                              <- optionnel : separateur vers le
+ *   code MATL-ABC utilisateur final    code utilisateur final (main()),
+ *                                       extension pratique par rapport
+ *                                       a JCUP pur (qui n'a pas cette
+ *                                       notion) pour pouvoir tester le
+ *                                       parseur genere directement.
+ *
+ * Differences deliberees avec JCUP :
+ *   - "RESULT" et les etiquettes "SYM:label" sont des IDENTIFIANTS
+ *     MATL-ABC ORDINAIRES cote genere (pas de reecriture textuelle
+ *     $$/$N necessaire, contrairement a matlex/round3) : on DECLARE
+ *     simplement des variables locales portant exactement ces noms
+ *     avant de coller l'action telle quelle.
+ *   - Les valeurs semantiques ne sont pas limitees a des entiers :
+ *     tout type declare (terminal/non-terminal) qui n'est ni "int" ni
+ *     "str" est traite comme un POINTEUR generique (voir SemVal) --
+ *     couvre struct/tableau/pile/arbre/"un autre symbole", exactement
+ *     la demande de "personnaliser les dollars".
+ * =========================================================== */
+
+struct RhsSymRef {
+    char[32] sym_name;
+    char[32] label;    /* "" si pas d'etiquette ":label" */
+}
+
+struct RuleAltRaw {
+    char[32]     lhs_name;
+    RhsSymRef[12] rhs;
+    int           rhs_len;
+    char[1200]    action;
+}
+
+struct TokenDeclRaw {
+    char[32] name;
+    char[32] type_name;   /* "" = terminal sans valeur (ex: ADD) */
+}
+
+struct PrecDeclRaw {
+    char[32] name;
+    int      level;
+    int      assoc;   /* 1=left 2=right 3=nonassoc */
+}
+
+struct GrammarSpec {
+    char[4096] prologue_code;   /* contenu de "parser code { ... }" -- methodes */
+    int        prologue_len;
+
+    /* struct/enum extraits de "parser code { ... }" -- ne peuvent PAS
+       etre imbriques dans la struct generee (declaration de type
+       imbriquee non supportee), donc hisses au niveau racine du
+       fichier genere, avant la struct SemVal/GenParser. Permet de
+       declarer de vrais types composites (arbres, listes, etc.)
+       utilisables comme valeur semantique via SemVal.pval. */
+    char[2048] top_level_code;
+    int        top_level_len;
+
+    TokenDeclRaw[64] terminals;
+    int               terminal_count;
+
+    TokenDeclRaw[64] nonterminals;
+    int               nonterminal_count;
+
+    PrecDeclRaw[32] precs;
+    int             prec_count;
+    int             prec_level_count;   /* nb de DECLARATIONS %left/%right/%nonassoc vues */
+
+    char[32] start_name;   /* "" si "start with" absent -> 1ere regle */
+
+    RuleAltRaw[64] alts;
+    int            alt_count;
+
+    char[4096] epilogue_code;
+    int        epilogue_len;
+
+    char[64] struct_name;           /* nom de la struct parseur generee */
+    char[64] scanner_struct_name;   /* struct scanner attendue par parse_with_scanner() */
+}
+
+/* Classification du type semantique declare pour un symbole -- pilote
+   le champ de SemVal utilise a la generation de code (voir gen_parser_v2). */
+enum ValKind { VNone, VInt, VStr, VOther }
+
+int classify_type(char* type_name) {
+    if (type_name[0] == cast<char>(0)) { return ValKind.VNone; }
+    if (strcmp(type_name, "int") == 0) { return ValKind.VInt; }
+    if (strcmp(type_name, "str") == 0) { return ValKind.VStr; }
+    return ValKind.VOther;
+}
+
+struct JCupParser {
+    char* text;
+    int   pos;
+    int   len;
+
+    RhsSymRef[12] tmp_rhs;   /* scratch (voir note round 3 : tableaux locaux
+                                 de type struct non supportes par le parseur) */
+
+    void init(char* spec_text) {
+        self.text = spec_text;
+        self.pos  = 0;
+        self.len  = cast<int>(strlen(spec_text));
+    }
+
+    bool at_end() { return self.pos >= self.len; }
+    char peek() { if (self.at_end()) return cast<char>(0); return self.text[self.pos]; }
+    char advance() { char c = self.text[self.pos]; self.pos = self.pos + 1; return c; }
+
+    bool is_inline_ws(char c) { return c == ' ' || c == cast<char>(9); }
+    bool is_ws_or_nl(char c) { return c == ' ' || c == cast<char>(9) || c == cast<char>(10) || c == cast<char>(13); }
+    bool is_ident_char(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }
+    bool is_ident_start(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
+
+    void skip_ws_nl() {
+        bool going = true;
+        while (going) {
+            if (!self.at_end() && self.is_ws_or_nl(self.peek())) {
+                self.advance();
+            } else if (!self.at_end() && self.peek() == '/' && self.pos + 1 < self.len && self.text[self.pos + 1] == '*') {
+                self.advance(); self.advance();
+                bool closed = false;
+                while (!closed && !self.at_end()) {
+                    if (self.peek() == '*' && self.pos + 1 < self.len && self.text[self.pos + 1] == '/') {
+                        self.advance(); self.advance();
+                        closed = true;
+                    } else {
+                        self.advance();
+                    }
+                }
+            } else if (!self.at_end() && self.peek() == '/' && self.pos + 1 < self.len && self.text[self.pos + 1] == '/') {
+                while (!self.at_end() && self.peek() != cast<char>(10)) { self.advance(); }
+            } else {
+                going = false;
+            }
+        }
+    }
+
+    /* Verifie si le texte, a la position courante, commence par le mot
+       'kw' (bordure de mot respectee). Si oui, avance et retourne true ;
+       sinon ne bouge pas et retourne false. */
+    bool match_kw(char* kw) {
+        int klen = 0;
+        while (kw[klen] != cast<char>(0)) { klen = klen + 1; }
+        if (self.pos + klen > self.len) { return false; }
+        for i in range(klen) {
+            if (self.text[self.pos + i] != kw[i]) { return false; }
+        }
+        if (self.pos + klen < self.len && self.is_ident_char(self.text[self.pos + klen])) { return false; }
+        self.pos = self.pos + klen;
+        return true;
+    }
+
+    void parse_parser_code(GrammarSpec* out) {
+        self.skip_ws_nl();
+        if (!self.at_end() && self.peek() == '{') {
+            int depth = 0;
+            bool in_str = false;
+            bool in_chr = false;
+            int as_ = self.pos;
+            bool scanning = true;
+            while (scanning) {
+                if (self.at_end()) {
+                    scanning = false;
+                } else {
+                    char c = self.advance();
+                    if (in_str) {
+                        if (c == '\\' && !self.at_end()) { self.advance(); }
+                        else if (c == '"') { in_str = false; }
+                    } else if (in_chr) {
+                        if (c == '\\' && !self.at_end()) { self.advance(); }
+                        else if (c == '\'') { in_chr = false; }
+                    } else {
+                        if (c == '"') { in_str = true; }
+                        else if (c == '\'') { in_chr = true; }
+                        else if (c == '{') { depth = depth + 1; }
+                        else if (c == '}') {
+                            depth = depth - 1;
+                            if (depth == 0) { scanning = false; }
+                        }
+                    }
+                }
+            }
+            int ae = self.pos;
+            int cs = as_ + 1;
+            int ce = ae - 1;
+            int clen = ce - cs;
+            if (clen > 0) {
+                if (clen > 4095) { clen = 4095; }
+                int k = 0;
+                while (k < clen && out.prologue_len < 4095) {
+                    out.prologue_code[out.prologue_len] = self.text[cs + k];
+                    out.prologue_len = out.prologue_len + 1;
+                    k = k + 1;
+                }
+            }
+        }
+    }
+
+    void parse_terminal_decl(GrammarSpec* out) {
+        self.skip_ws_nl();
+        int s1 = self.pos;
+        while (!self.at_end() && self.is_ident_char(self.peek())) { self.advance(); }
+        int e1 = self.pos;
+        self.skip_ws_nl();
+
+        char[32] type_name;
+        type_name[0] = cast<char>(0);
+        if (!self.at_end() && self.is_ident_start(self.peek())) {
+            int tlen = e1 - s1;
+            if (tlen > 31) { tlen = 31; }
+            int k = 0;
+            while (k < tlen) { type_name[k] = self.text[s1 + k]; k = k + 1; }
+            type_name[tlen] = cast<char>(0);
+        } else {
+            self.pos = s1;
+        }
+
+        bool done = false;
+        while (!done) {
+            self.skip_ws_nl();
+            int ns = self.pos;
+            while (!self.at_end() && self.is_ident_char(self.peek())) { self.advance(); }
+            int ne = self.pos;
+            if (ne > ns) {
+                int tid = out.terminal_count;
+                int nlen = ne - ns;
+                if (nlen > 31) { nlen = 31; }
+                int k = 0;
+                while (k < nlen) { out.terminals[tid].name[k] = self.text[ns + k]; k = k + 1; }
+                out.terminals[tid].name[nlen] = cast<char>(0);
+                k = 0;
+                while (type_name[k] != cast<char>(0)) { out.terminals[tid].type_name[k] = type_name[k]; k = k + 1; }
+                out.terminals[tid].type_name[k] = cast<char>(0);
+                out.terminal_count = tid + 1;
+            }
+            self.skip_ws_nl();
+            if (!self.at_end() && self.peek() == ',') {
+                self.advance();
+            } else {
+                if (!self.at_end() && self.peek() == ';') { self.advance(); }
+                done = true;
+            }
+        }
+    }
+
+    void parse_nonterminal_decl(GrammarSpec* out) {
+        self.skip_ws_nl();
+        int s1 = self.pos;
+        while (!self.at_end() && self.is_ident_char(self.peek())) { self.advance(); }
+        int e1 = self.pos;
+        char[32] type_name;
+        int tlen = e1 - s1;
+        if (tlen > 31) { tlen = 31; }
+        int k = 0;
+        while (k < tlen) { type_name[k] = self.text[s1 + k]; k = k + 1; }
+        type_name[tlen] = cast<char>(0);
+
+        bool done = false;
+        while (!done) {
+            self.skip_ws_nl();
+            int ns = self.pos;
+            while (!self.at_end() && self.is_ident_char(self.peek())) { self.advance(); }
+            int ne = self.pos;
+            if (ne > ns) {
+                int nid = out.nonterminal_count;
+                int nlen = ne - ns;
+                if (nlen > 31) { nlen = 31; }
+                k = 0;
+                while (k < nlen) { out.nonterminals[nid].name[k] = self.text[ns + k]; k = k + 1; }
+                out.nonterminals[nid].name[nlen] = cast<char>(0);
+                k = 0;
+                while (type_name[k] != cast<char>(0)) { out.nonterminals[nid].type_name[k] = type_name[k]; k = k + 1; }
+                out.nonterminals[nid].type_name[k] = cast<char>(0);
+                out.nonterminal_count = nid + 1;
+            }
+            self.skip_ws_nl();
+            if (!self.at_end() && self.peek() == ',') {
+                self.advance();
+            } else {
+                if (!self.at_end() && self.peek() == ';') { self.advance(); }
+                done = true;
+            }
+        }
+    }
+
+    void parse_start_decl(GrammarSpec* out) {
+        self.skip_ws_nl();
+        int ns = self.pos;
+        while (!self.at_end() && self.is_ident_char(self.peek())) { self.advance(); }
+        int ne = self.pos;
+        int nlen = ne - ns;
+        if (nlen > 31) { nlen = 31; }
+        int k = 0;
+        while (k < nlen) { out.start_name[k] = self.text[ns + k]; k = k + 1; }
+        out.start_name[nlen] = cast<char>(0);
+        self.skip_ws_nl();
+        if (!self.at_end() && self.peek() == ';') { self.advance(); }
+    }
+
+    void parse_scanner_decl(GrammarSpec* out) {
+        self.skip_ws_nl();
+        int ns = self.pos;
+        while (!self.at_end() && self.is_ident_char(self.peek())) { self.advance(); }
+        int ne = self.pos;
+        int nlen = ne - ns;
+        if (nlen > 63) { nlen = 63; }
+        int k = 0;
+        while (k < nlen) { out.scanner_struct_name[k] = self.text[ns + k]; k = k + 1; }
+        out.scanner_struct_name[nlen] = cast<char>(0);
+        self.skip_ws_nl();
+        if (!self.at_end() && self.peek() == ';') { self.advance(); }
+    }
+
+    void parse_struct_decl(GrammarSpec* out) {
+        self.skip_ws_nl();
+        int ns = self.pos;
+        while (!self.at_end() && self.is_ident_char(self.peek())) { self.advance(); }
+        int ne = self.pos;
+        int nlen = ne - ns;
+        if (nlen > 63) { nlen = 63; }
+        int k = 0;
+        while (k < nlen) { out.struct_name[k] = self.text[ns + k]; k = k + 1; }
+        out.struct_name[nlen] = cast<char>(0);
+        self.skip_ws_nl();
+        if (!self.at_end() && self.peek() == ';') { self.advance(); }
+    }
+
+    void parse_prec_decl(GrammarSpec* out, int assoc) {
+        int level = out.prec_level_count;
+        out.prec_level_count = level + 1;
+        bool done = false;
+        while (!done) {
+            self.skip_ws_nl();
+            if (self.at_end() || self.peek() == ';') {
+                if (!self.at_end()) { self.advance(); }
+                done = true;
+            } else {
+                int ns = self.pos;
+                while (!self.at_end() && self.is_ident_char(self.peek())) { self.advance(); }
+                int ne = self.pos;
+                if (ne > ns) {
+                    int pid = out.prec_count;
+                    int nlen = ne - ns;
+                    if (nlen > 31) { nlen = 31; }
+                    int k = 0;
+                    while (k < nlen) { out.precs[pid].name[k] = self.text[ns + k]; k = k + 1; }
+                    out.precs[pid].name[nlen] = cast<char>(0);
+                    out.precs[pid].level = level;
+                    out.precs[pid].assoc = assoc;
+                    out.prec_count = pid + 1;
+                } else {
+                    self.advance();
+                }
+            }
+        }
+    }
+
+    /* Une regle complete : "NOM ::= alt1 { action } | alt2 { action } ... ;"
+       Le corps d'une alternative peut etre VIDE (production epsilon,
+       ex: "liste ::= { RESULT = 0; } | liste ITEM { ... } ;"). */
+    void parse_one_rule(GrammarSpec* out) {
+        self.skip_ws_nl();
+        int ns = self.pos;
+        while (!self.at_end() && self.is_ident_char(self.peek())) { self.advance(); }
+        int ne = self.pos;
+        char[32] lhs_name;
+        int nlen = ne - ns;
+        if (nlen > 31) { nlen = 31; }
+        int ci = 0;
+        while (ci < nlen) { lhs_name[ci] = self.text[ns + ci]; ci = ci + 1; }
+        lhs_name[nlen] = cast<char>(0);
+
+        self.skip_ws_nl();
+        if (!self.at_end() && self.peek() == ':') { self.advance(); }
+        if (!self.at_end() && self.peek() == ':') { self.advance(); }
+        if (!self.at_end() && self.peek() == '=') { self.advance(); }
+
+        bool alts_done = false;
+        while (!alts_done) {
+            self.skip_ws_nl();
+
+            int rhs_len = 0;
+            bool collecting = true;
+            while (collecting) {
+                self.skip_ws_nl();
+                if (self.at_end() || self.peek() == '{' || self.peek() == ';' || self.peek() == '|') {
+                    collecting = false;
+                } else {
+                    int rs = self.pos;
+                    while (!self.at_end() && self.is_ident_char(self.peek())) { self.advance(); }
+                    int re = self.pos;
+                    int rl = re - rs;
+                    if (rl > 0 && rhs_len < 12) {
+                        char[32] lbl;
+                        lbl[0] = cast<char>(0);
+                        if (!self.at_end() && self.peek() == ':') {
+                            self.advance();
+                            int ls = self.pos;
+                            while (!self.at_end() && self.is_ident_char(self.peek())) { self.advance(); }
+                            int le = self.pos;
+                            int lbl_len = le - ls;
+                            if (lbl_len > 31) { lbl_len = 31; }
+                            int k = 0;
+                            while (k < lbl_len) { lbl[k] = self.text[ls + k]; k = k + 1; }
+                            lbl[lbl_len] = cast<char>(0);
+                        }
+                        if (rl > 31) { rl = 31; }
+                        int k = 0;
+                        while (k < rl) { self.tmp_rhs[rhs_len].sym_name[k] = self.text[rs + k]; k = k + 1; }
+                        self.tmp_rhs[rhs_len].sym_name[rl] = cast<char>(0);
+                        k = 0;
+                        while (lbl[k] != cast<char>(0)) { self.tmp_rhs[rhs_len].label[k] = lbl[k]; k = k + 1; }
+                        self.tmp_rhs[rhs_len].label[k] = cast<char>(0);
+                        rhs_len = rhs_len + 1;
+                    } else if (rl == 0) {
+                        self.advance();
+                    }
+                }
+            }
+
+            char[1200] action_text;
+            int action_len = 0;
+            if (!self.at_end() && self.peek() == '{') {
+                int as_ = self.pos;
+                int depth = 0;
+                bool in_str = false;
+                bool in_chr = false;
+                bool scanning = true;
+                while (scanning) {
+                    if (self.at_end()) {
+                        scanning = false;
+                    } else {
+                        char c = self.advance();
+                        if (in_str) {
+                            if (c == '\\' && !self.at_end()) { self.advance(); }
+                            else if (c == '"') { in_str = false; }
+                        } else if (in_chr) {
+                            if (c == '\\' && !self.at_end()) { self.advance(); }
+                            else if (c == '\'') { in_chr = false; }
+                        } else {
+                            if (c == '"') { in_str = true; }
+                            else if (c == '\'') { in_chr = true; }
+                            else if (c == '{') { depth = depth + 1; }
+                            else if (c == '}') {
+                                depth = depth - 1;
+                                if (depth == 0) { scanning = false; }
+                            }
+                        }
+                    }
+                }
+                int ae = self.pos;
+                action_len = ae - as_;
+                if (action_len > 1199) { action_len = 1199; }
+                int k = 0;
+                while (k < action_len) { action_text[k] = self.text[as_ + k]; k = k + 1; }
+                action_text[action_len] = cast<char>(0);
+            } else {
+                /* pas d'action : bloc par defaut (jamais vide, cf
+                   limitation connue des blocs {} vides) */
+                str dflt = "{ int noop_default = 0; }";
+                char* d = dflt.data();
+                int k = 0;
+                while (d[k] != cast<char>(0)) { action_text[k] = d[k]; k = k + 1; }
+                action_len = k;
+                action_text[action_len] = cast<char>(0);
+            }
+
+            int aid = out.alt_count;
+            int ln = 0;
+            while (lhs_name[ln] != cast<char>(0)) { out.alts[aid].lhs_name[ln] = lhs_name[ln]; ln = ln + 1; }
+            out.alts[aid].lhs_name[ln] = cast<char>(0);
+
+            int ri = 0;
+            while (ri < rhs_len) {
+                int rn = 0;
+                while (self.tmp_rhs[ri].sym_name[rn] != cast<char>(0)) { out.alts[aid].rhs[ri].sym_name[rn] = self.tmp_rhs[ri].sym_name[rn]; rn = rn + 1; }
+                out.alts[aid].rhs[ri].sym_name[rn] = cast<char>(0);
+                int ln2 = 0;
+                while (self.tmp_rhs[ri].label[ln2] != cast<char>(0)) { out.alts[aid].rhs[ri].label[ln2] = self.tmp_rhs[ri].label[ln2]; ln2 = ln2 + 1; }
+                out.alts[aid].rhs[ri].label[ln2] = cast<char>(0);
+                ri = ri + 1;
+            }
+            out.alts[aid].rhs_len = rhs_len;
+
+            int k2 = 0;
+            while (k2 < action_len && k2 < 1199) { out.alts[aid].action[k2] = action_text[k2]; k2 = k2 + 1; }
+            out.alts[aid].action[k2] = cast<char>(0);
+
+            out.alt_count = aid + 1;
+
+            self.skip_ws_nl();
+            if (!self.at_end() && self.peek() == '|') {
+                self.advance();
+            } else {
+                if (!self.at_end() && self.peek() == ';') { self.advance(); }
+                alts_done = true;
+            }
+        }
+    }
+
+    void parse_epilogue(GrammarSpec* out) {
+        int es = self.pos;
+        while (!self.at_end()) { self.advance(); }
+        int elen = self.pos - es;
+        if (elen > 4095) { elen = 4095; }
+        int i = 0;
+        while (i < elen) { out.epilogue_code[i] = self.text[es + i]; i = i + 1; }
+        out.epilogue_code[elen] = cast<char>(0);
+        out.epilogue_len = elen;
+    }
+
+    void parse(GrammarSpec* out) {
+        out.prologue_len       = 0;
+        out.top_level_len      = 0;
+        out.terminal_count     = 0;
+        out.nonterminal_count  = 0;
+        out.prec_count         = 0;
+        out.prec_level_count   = 0;
+        out.start_name[0]      = cast<char>(0);
+        out.alt_count          = 0;
+        out.epilogue_len       = 0;
+        out.struct_name[0]         = cast<char>(0);
+        out.scanner_struct_name[0] = cast<char>(0);
+
+        bool done = false;
+        while (!done) {
+            self.skip_ws_nl();
+            if (self.at_end()) {
+                done = true;
+            } else if (self.peek() == '%' && self.pos + 1 < self.len && self.text[self.pos + 1] == '%') {
+                self.pos = self.pos + 2;
+                self.parse_epilogue(out);
+                done = true;
+            } else if (self.match_kw("import")) {
+                while (!self.at_end() && self.peek() != cast<char>(10)) { self.advance(); }
+            } else if (self.match_kw("parser")) {
+                self.skip_ws_nl();
+                self.match_kw("code");
+                self.parse_parser_code(out);
+            } else if (self.match_kw("non")) {
+                self.skip_ws_nl();
+                self.match_kw("terminal");
+                self.parse_nonterminal_decl(out);
+            } else if (self.match_kw("terminal")) {
+                self.parse_terminal_decl(out);
+            } else if (self.match_kw("start")) {
+                self.skip_ws_nl();
+                self.match_kw("with");
+                self.parse_start_decl(out);
+            } else if (self.match_kw("%left")) {
+                self.parse_prec_decl(out, Assoc.AssocLeft);
+            } else if (self.match_kw("%right")) {
+                self.parse_prec_decl(out, Assoc.AssocRight);
+            } else if (self.match_kw("%nonassoc")) {
+                self.parse_prec_decl(out, Assoc.AssocNonassoc);
+            } else if (self.match_kw("%scanner")) {
+                self.parse_scanner_decl(out);
+            } else if (self.match_kw("%struct")) {
+                self.parse_struct_decl(out);
+            } else {
+                self.parse_one_rule(out);
+            }
+        }
+
+        if (out.struct_name[0] == cast<char>(0)) {
+            str dflt = "GenParser";
+            char* d = dflt.data();
+            int i = 0;
+            while (d[i] != cast<char>(0)) { out.struct_name[i] = d[i]; i = i + 1; }
+            out.struct_name[i] = cast<char>(0);
+        }
+        if (out.scanner_struct_name[0] == cast<char>(0)) {
+            str dflt = "GenScanner";
+            char* d = dflt.data();
+            int i = 0;
+            while (d[i] != cast<char>(0)) { out.scanner_struct_name[i] = d[i]; i = i + 1; }
+            out.scanner_struct_name[i] = cast<char>(0);
+        }
+
+        self.split_top_level_decls(out);
+    }
+
+    /* Verifie si 'kw' apparait dans out.prologue_code a la position i
+       (bordure de mot respectee des deux cotes). N'avance rien -- ce
+       n'est PAS self.match_kw (qui opere sur self.text/self.pos) : ici
+       on relit le texte DEJA CAPTURE du prologue, avec un index local. */
+    bool prologue_word_at(GrammarSpec* out, int i, char* kw) {
+        int klen = 0;
+        while (kw[klen] != cast<char>(0)) { klen = klen + 1; }
+        if (i + klen > out.prologue_len) { return false; }
+        for k in range(klen) {
+            if (out.prologue_code[i + k] != kw[k]) { return false; }
+        }
+        if (i > 0 && self.is_ident_char(out.prologue_code[i - 1])) { return false; }
+        if (i + klen < out.prologue_len && self.is_ident_char(out.prologue_code[i + klen])) { return false; }
+        return true;
+    }
+
+    /* Extrait les declarations "struct NOM { ... }" et "enum NOM { ... }"
+       trouvees dans le texte DEJA CAPTURE de "parser code { ... }" et
+       les deplace dans out.top_level_code -- necessaire car MATL-ABC
+       n'autorise pas de declaration de type IMBRIQUEE dans une autre
+       struct (contrairement a une simple methode). Tout le reste
+       (methodes, code ordinaire) demeure dans out.prologue_code,
+       colle tel quel comme methodes de la struct generee (comme
+       avant). Repere les deux mots-cles par bordure de mot, capture
+       le bloc entier via un comptage d'accolades equilibre
+       (conscient chaines/caracteres litteraux -- meme technique que
+       partout ailleurs dans matyacc/matlex). */
+    void split_top_level_decls(GrammarSpec* out) {
+        char[4096] remaining;
+        int remaining_len = 0;
+        int n = out.prologue_len;
+        int i = 0;
+        while (i < n) {
+            bool is_struct_kw = self.prologue_word_at(out, i, "struct");
+            bool is_enum_kw = self.prologue_word_at(out, i, "enum");
+            if (is_struct_kw || is_enum_kw) {
+                int decl_start = i;
+                int j = i;
+                if (is_struct_kw) { j = j + 6; } else { j = j + 4; }
+                while (j < n && self.is_inline_ws(out.prologue_code[j])) { j = j + 1; }
+                int ns = j;
+                while (j < n && self.is_ident_char(out.prologue_code[j])) { j = j + 1; }
+                bool has_name = j > ns;
+                while (j < n && self.is_inline_ws(out.prologue_code[j])) { j = j + 1; }
+
+                if (has_name && j < n && out.prologue_code[j] == '{') {
+                    int depth = 0;
+                    bool in_str = false;
+                    bool in_chr = false;
+                    bool scanning = true;
+                    while (scanning && j < n) {
+                        char c = out.prologue_code[j];
+                        if (in_str) {
+                            if (c == '\\' && j + 1 < n) { j = j + 1; }
+                            else if (c == '"') { in_str = false; }
+                        } else if (in_chr) {
+                            if (c == '\\' && j + 1 < n) { j = j + 1; }
+                            else if (c == '\'') { in_chr = false; }
+                        } else {
+                            if (c == '"') { in_str = true; }
+                            else if (c == '\'') { in_chr = true; }
+                            else if (c == '{') { depth = depth + 1; }
+                            else if (c == '}') {
+                                depth = depth - 1;
+                                if (depth == 0) { scanning = false; }
+                            }
+                        }
+                        j = j + 1;
+                    }
+                    int decl_end = j;
+                    for k in range(decl_end - decl_start) {
+                        if (out.top_level_len < 2047) {
+                            out.top_level_code[out.top_level_len] = out.prologue_code[decl_start + k];
+                            out.top_level_len = out.top_level_len + 1;
+                        }
+                    }
+                    if (out.top_level_len < 2047) {
+                        out.top_level_code[out.top_level_len] = cast<char>(10);
+                        out.top_level_len = out.top_level_len + 1;
+                    }
+                    i = decl_end;
+                } else {
+                    remaining[remaining_len] = out.prologue_code[i];
+                    remaining_len = remaining_len + 1;
+                    i = i + 1;
+                }
+            } else {
+                remaining[remaining_len] = out.prologue_code[i];
+                remaining_len = remaining_len + 1;
+                i = i + 1;
+            }
+        }
+        out.top_level_code[out.top_level_len] = cast<char>(0);
+
+        for k in range(remaining_len) { out.prologue_code[k] = remaining[k]; }
+        out.prologue_code[remaining_len] = cast<char>(0);
+        out.prologue_len = remaining_len;
+    }
+}
+
+/* ===========================================================
+ * CONSTRUCTION DE LA GRAMMAIRE DEPUIS LA SPEC JCUP
+ * =========================================================== */
+
+int find_symbol(Grammar* g, char* name) {
+    int i = 0;
+    while (i < g.symbol_count) {
+        if (strcmp(&g.symbols[i].name, name) == 0) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+void build_grammar_from_jcup_spec(GrammarSpec* spec, Grammar* g) {
+    g.init();
+
+    int i = 0;
+    while (i < spec.terminal_count) {
+        int tid = g.add_symbol_typed(&spec.terminals[i].name, &spec.terminals[i].type_name, true);
+        int pi = 0;
+        while (pi < spec.prec_count) {
+            if (strcmp(&spec.precs[pi].name, &spec.terminals[i].name) == 0) {
+                g.set_prec(tid, spec.precs[pi].level, spec.precs[pi].assoc);
+            }
+            pi = pi + 1;
+        }
+        i = i + 1;
+    }
+    int dollar = g.add_symbol("$", true);
+
+    i = 0;
+    while (i < spec.nonterminal_count) {
+        g.add_symbol_typed(&spec.nonterminals[i].name, &spec.nonterminals[i].type_name, false);
+        i = i + 1;
+    }
+
+    int start_nonterm = -1;
+    if (spec.start_name[0] != cast<char>(0)) {
+        start_nonterm = find_symbol(g, &spec.start_name);
+    }
+    if (start_nonterm == -1 && spec.alt_count > 0) {
+        start_nonterm = find_symbol(g, &spec.alts[0].lhs_name);
+    }
+
+    int sp = g.add_symbol("S'", false);
+    g.start_symbol = sp;
+    int[8] rhs0;
+    rhs0[0] = start_nonterm;
+    g.add_prod(sp, &rhs0, 1);
+
+    i = 0;
+    while (i < spec.alt_count) {
+        int lhs_id = find_symbol(g, &spec.alts[i].lhs_name);
+        int[8] rhs_ids;
+        int j = 0;
+        while (j < spec.alts[i].rhs_len) {
+            rhs_ids[j] = find_symbol(g, &spec.alts[i].rhs[j].sym_name);
+            j = j + 1;
+        }
+        g.add_prod(lhs_id, &rhs_ids, spec.alts[i].rhs_len);
+        i = i + 1;
+    }
+}
+
+/* ===========================================================
+ * LECTURE DE FICHIER
+ * =========================================================== */
+int read_whole_file(char* path, char* buf, int cap) {
+    char* mode = "r";
+    char* f = fopen(path, mode);
+    if (f == null) { return -1; }
+    int off = 0;
+    char* got = fgets(buf + off, cap - off, f);
+    while (got != null) {
+        off = off + cast<int>(strlen(buf + off));
+        if (cap - off < 2) { got = null; } else { got = fgets(buf + off, cap - off, f); }
+    }
+    fclose(f);
+    buf[off] = cast<char>(0);
+    return off;
+}
+
+/* ===========================================================
+ * GENERATION DE CODE : parseur MATL-ABC autonome, SemVal typee
+ * ===========================================================
+ * SemVal remplace le "int vstack[]" du round 3 par une petite union
+ * etiquetee (kind + ival/sval/pval) : chaque symbole (terminal ou
+ * non-terminal) porte un TYPE declare (round 4), qui determine quel
+ * champ de SemVal utiliser. Un type ni "int" ni "str" est traite
+ * comme un POINTEUR GENERIQUE (rawptr) -- couvre struct/tableau/
+ * pile/arbre/tout "autre symbole" MATL-ABC, sans que matyacc ait
+ * besoin de connaitre ce type a l'avance.
+ * =========================================================== */
+void gen_parser_v2(Grammar* g, Automaton* a, SLRTable* table, GrammarSpec* spec, int dollar_sym) {
+    printf("/* =====================================================\n");
+    printf(" * Parseur genere automatiquement par matyacc (round 5, .may)\n");
+    printf(" * Style JCUP -- NE PAS EDITER A LA MAIN\n");
+    printf(" * ===================================================== */\n\n");
+    printf("import <cstd>\n");
+    printf("import <cstring>\n\n");
+
+    if (spec.terminal_count > 0) {
+        /* enum "sym" (comme le module sym.java genere par CUP) plutot
+           que des #define bruts -- cote matlex, un scanner ecrira
+           "return symbol(sym.NUMBER);" plutot que "return symbol(1);" :
+           plus de synchronisation manuelle d'entiers magiques entre
+           les deux specs, l'ordre des "terminal" fait foi des deux
+           cotes puisque sym.NOM reste correct meme si l'ordre change. */
+        printf("/* ---- constantes de token, comme le module 'sym' de CUP ---- */\n");
+        printf("enum sym {");
+        int ti = 0;
+        while (ti < spec.terminal_count) {
+            if (ti > 0) { printf(","); }
+            printf(" %s", &spec.terminals[ti].name);
+            ti = ti + 1;
+        }
+        printf(" }\n\n");
+    }
+
+    if (spec.top_level_len > 0) {
+        printf("/* ---- struct/enum declares dans \"parser code { }\" -- hisses\n");
+        printf("   au niveau racine (une declaration de type ne peut pas etre\n");
+        printf("   imbriquee dans une autre struct en MATL-ABC) ---- */\n");
+        printf("%s\n", &spec.top_level_code);
+    }
+
+    printf("/* SemVal : valeur semantique 'personnalisable' -- int, str,\n");
+    printf("   ou pointeur generique (struct/tableau/pile/arbre/...). */\n");
+    printf("struct SemVal {\n");
+    printf("    int  kind;\n");
+    printf("    int  ival;\n");
+    printf("    str  sval;\n");
+    printf("    rawptr pval;\n");
+    printf("}\n\n");
+
+    printf("struct %s {\n", &spec.struct_name);
+    printf("    int[%d] action_tbl;\n", a.state_count * 32);
+    printf("    int[%d] goto_tbl;\n", a.state_count * 32);
+    printf("    int[128] sstack;\n    int sp;\n");
+    printf("    SemVal[128] vstack;\n    int vsp;\n\n");
+
+    printf("    void init() {\n");
+    printf("        int i = 0;\n        while (i < %d) { self.action_tbl[i] = 0; self.goto_tbl[i] = -1; i = i + 1; }\n", a.state_count * 32);
+    int s = 0;
+    while (s < a.state_count) {
+        int sym = 0;
+        while (sym < g.symbol_count) {
+            int act = table.action[s * 32 + sym];
+            if (act != 0) { printf("        self.action_tbl[%d] = %d;\n", s * 32 + sym, act); }
+            int gt = table.goto_tbl[s * 32 + sym];
+            if (gt != -1) { printf("        self.goto_tbl[%d] = %d;\n", s * 32 + sym, gt); }
+            sym = sym + 1;
+        }
+        s = s + 1;
+    }
+    printf("    }\n\n");
+
+    if (spec.prologue_len > 0) {
+        printf("    /* ---- parser code { ... }, methodes ---- */\n");
+        printf("%s\n", &spec.prologue_code);
+    }
+
+    /* ---- corps de reduction partage entre parse() et parse_with_scanner() ---- */
+    printf("    /* Dispatch de reduction commun (appele par parse() et\n");
+    printf("       parse_with_scanner()) : execute l'action de la regle,\n");
+    printf("       depile, calcule le GOTO, empile le resultat. */\n");
+    printf("    void do_reduce(int rule) {\n");
+
+    int ri = 0;
+    while (ri < spec.alt_count) {
+        int prod_id = ri + 1;
+        int rlen = g.prods[prod_id].rhs_len;
+        if (ri == 0) {
+            printf("        if (rule == %d) {\n", prod_id);
+        } else {
+            printf("        } else if (rule == %d) {\n", prod_id);
+        }
+
+        int k = 0;
+        while (k < rlen) {
+            char* label = &spec.alts[ri].rhs[k].label;
+            if (label[0] != cast<char>(0)) {
+                int sid = find_symbol(g, &spec.alts[ri].rhs[k].sym_name);
+                char* type_name = &g.symbols[sid].type_name;
+                int kind = classify_type(type_name);
+                match (kind) {
+                    ValKind.VInt => {
+                        printf("            int %s = self.vstack[self.vsp - %d + %d].ival;\n", label, rlen, k);
+                    }
+                    ValKind.VStr => {
+                        printf("            str %s = self.vstack[self.vsp - %d + %d].sval;\n", label, rlen, k);
+                    }
+                    ValKind.VOther => {
+                        printf("            %s* %s = cast<%s*>(self.vstack[self.vsp - %d + %d].pval);\n", type_name, label, type_name, rlen, k);
+                    }
+                    _ => { }
+                }
+            }
+            k = k + 1;
+        }
+
+        int lhs_id = g.prods[prod_id].lhs;
+        char* lhs_type = &g.symbols[lhs_id].type_name;
+        int lhs_kind = classify_type(lhs_type);
+        match (lhs_kind) {
+            ValKind.VInt   => { printf("            int RESULT = 0;\n"); }
+            ValKind.VStr   => { printf("            str RESULT = \"\";\n"); }
+            ValKind.VOther => { printf("            %s* RESULT = null;\n", lhs_type); }
+            _ => { printf("            int RESULT = 0;\n"); }
+        }
+
+        printf("            %s\n", &spec.alts[ri].action);
+
+        printf("            self.sp = self.sp - %d;\n", rlen);
+        printf("            self.vsp = self.vsp - %d;\n", rlen);
+        printf("            int top_state = self.sstack[self.sp - 1];\n");
+        printf("            int goto_state = self.goto_tbl[top_state * 32 + %d];\n", lhs_id);
+        printf("            self.sstack[self.sp] = goto_state;\n");
+        printf("            self.sp = self.sp + 1;\n");
+        printf("            SemVal rv;\n");
+        printf("            rv.kind = %d;\n", lhs_kind);
+        match (lhs_kind) {
+            ValKind.VInt   => { printf("            rv.ival = RESULT;\n"); }
+            ValKind.VStr   => { printf("            rv.sval = RESULT;\n"); }
+            ValKind.VOther => { printf("            rv.pval = cast<rawptr>(RESULT);\n"); }
+            _ => { }
+        }
+        printf("            self.vstack[self.vsp] = rv;\n");
+        printf("            self.vsp = self.vsp + 1;\n");
+
+        ri = ri + 1;
+    }
+    if (spec.alt_count > 0) { printf("        }\n"); }
+    printf("    }\n\n");
+
+    /* ---- pack d'un terminal shifte en SemVal, selon son type declare ---- */
+    printf("    /* Empaquette une valeur de terminal (venant du lexer) en\n");
+    printf("       SemVal, selon le type declare de ce terminal. */\n");
+    printf("    SemVal pack_terminal(int term, int ival, str sval, rawptr pval) {\n");
+    printf("        SemVal sv;\n");
+    int ti = 0;
+    while (ti < spec.terminal_count) {
+        int kind = classify_type(&spec.terminals[ti].type_name);
+        if (ti == 0) { printf("        if (term == %d) { sv.kind = %d;", ti, kind); }
+        else { printf("        } else if (term == %d) { sv.kind = %d;", ti, kind); }
+        match (kind) {
+            ValKind.VInt   => { printf(" sv.ival = ival;"); }
+            ValKind.VStr   => { printf(" sv.sval = sval;"); }
+            ValKind.VOther => { printf(" sv.pval = pval;"); }
+            _ => { }
+        }
+        printf("\n");
+        ti = ti + 1;
+    }
+    if (spec.terminal_count > 0) { printf("        }\n"); }
+    printf("        return sv;\n");
+    printf("    }\n\n");
+
+    /* ---- parse() : tableau de tokens deja lexes ---- */
+    printf("    /* Parse une sequence de tokens deja lexee (tokens[i] = id de\n");
+    printf("       terminal, values[i] = SemVal associee -- utiliser\n");
+    printf("       pack_terminal() pour les construire). Retourne la SemVal\n");
+    printf("       finale (kind == -1 en cas d'erreur syntaxique). */\n");
+    printf("    SemVal parse(int* tokens, SemVal* values, int token_count) {\n");
+    printf("        self.sp = 1; self.sstack[0] = 0; self.vsp = 0;\n");
+    printf("        int ti = 0;\n");
+    printf("        SemVal result;\n        result.kind = -1;\n");
+    printf("        bool done = false;\n");
+    printf("        while (!done) {\n");
+    printf("            int cur_state = self.sstack[self.sp - 1];\n");
+    printf("            int lookahead = tokens[ti];\n");
+    printf("            int act = self.action_tbl[cur_state * 32 + lookahead];\n");
+    printf("            if (act == 0) {\n");
+    printf("                done = true;\n");
+    printf("            } else if (act == %d) {\n", -999999);
+    printf("                result = self.vstack[self.vsp - 1];\n");
+    printf("                done = true;\n");
+    printf("            } else if (act > 0) {\n");
+    printf("                self.sstack[self.sp] = act - 1;\n");
+    printf("                self.sp = self.sp + 1;\n");
+    printf("                self.vstack[self.vsp] = values[ti];\n");
+    printf("                self.vsp = self.vsp + 1;\n");
+    printf("                ti = ti + 1;\n");
+    printf("            } else {\n");
+    printf("                self.do_reduce(0 - act - 1);\n");
+    printf("            }\n");
+    printf("        }\n");
+    printf("        return result;\n");
+    printf("    }\n\n");
+
+    /* ---- integration automatique avec un scanner matlex ---- */
+    printf("    /* Integration AUTOMATIQUE avec un scanner genere par matlex :\n");
+    printf("       pilote sc.yylex() en direct (pas besoin de pre-tokeniser).\n");
+    printf("       Suppose l'interface standard matlex (Symbol{sym_type,\n");
+    printf("       line,column,ivalue,svalue}, methode yylex()). */\n");
+    printf("    SemVal parse_with_scanner(%s* sc) {\n", &spec.scanner_struct_name);
+    printf("        self.sp = 1; self.sstack[0] = 0; self.vsp = 0;\n");
+    printf("        Symbol cur_tok = sc.yylex();\n");
+    printf("        SemVal result;\n        result.kind = -1;\n");
+    printf("        bool done = false;\n");
+    printf("        while (!done) {\n");
+    printf("            int cur_state = self.sstack[self.sp - 1];\n");
+    printf("            int lookahead = cur_tok.sym_type;\n");
+    printf("            if (lookahead == -1) { lookahead = %d; }\n", dollar_sym);
+    printf("            int act = self.action_tbl[cur_state * 32 + lookahead];\n");
+    printf("            if (act == 0) {\n");
+    printf("                done = true;\n");
+    printf("            } else if (act == %d) {\n", -999999);
+    printf("                result = self.vstack[self.vsp - 1];\n");
+    printf("                done = true;\n");
+    printf("            } else if (act > 0) {\n");
+    printf("                self.sstack[self.sp] = act - 1;\n");
+    printf("                self.sp = self.sp + 1;\n");
+    printf("                rawptr no_ptr = null;\n");
+    printf("                self.vstack[self.vsp] = self.pack_terminal(lookahead, cur_tok.ivalue, cur_tok.svalue, no_ptr);\n");
+    printf("                self.vsp = self.vsp + 1;\n");
+    printf("                cur_tok = sc.yylex();\n");
+    printf("            } else {\n");
+    printf("                self.do_reduce(0 - act - 1);\n");
+    printf("            }\n");
+    printf("        }\n");
+    printf("        return result;\n");
+    printf("    }\n");
+    printf("}\n\n");
+
+    int has_epilogue_code = 0;
+    int eci = 0;
+    while (eci < spec.epilogue_len) {
+        char ec = spec.epilogue_code[eci];
+        if (ec != ' ' && ec != cast<char>(9) && ec != cast<char>(10) && ec != cast<char>(13)) {
+            has_epilogue_code = 1;
+        }
+        eci = eci + 1;
+    }
+    if (has_epilogue_code == 1) {
+        printf("/* ---- code utilisateur final (apres %%%%), typiquement main() ---- */\n");
+        printf("%s\n", &spec.epilogue_code);
+    }
+}
+
+/* Spec de demonstration EXACTE de l'exemple JCUP fourni par
+   l'utilisateur (traduit en syntaxe MATL-ABC) : "ADD a b" -> a+b. */
+str default_demo_jcup_spec() {
+    return "terminal ADD;\nterminal int NUMBER;\n\nnon terminal int expr;\n\nstart with expr;\n\nexpr ::=\n      ADD NUMBER:a NUMBER:b\n      {\n          RESULT = a + b;\n          printf(\"Resultat = %d\\n\", RESULT);\n      }\n    ;\n";
+}
+
+int main(int argc, char** argv) {
+    char[65536] spec_buf;
+    str spec_text;
+
+    if (argc > 1) {
+        int n = read_whole_file(argv[1], &spec_buf, 65536);
+        if (n < 0) {
+            printf("Erreur : impossible de lire '%s'\n", argv[1]);
+            return 1;
+        }
+        spec_text = &spec_buf;
+    } else {
+        spec_text = default_demo_jcup_spec();
+    }
+
+    GrammarSpec spec;
+    JCupParser jp;
+    jp.init(spec_text.data());
+    jp.parse(&spec);
+
+    printf("=== matyacc Round 4 : spec JCUP analysee ===\n");
+    printf("  struct     : %s\n", &spec.struct_name);
+    printf("  scanner    : %s\n", &spec.scanner_struct_name);
+    printf("  terminaux  : %d\n", spec.terminal_count);
+    int i = 0;
+    while (i < spec.terminal_count) {
+        printf("    %s : %s\n", &spec.terminals[i].name, &spec.terminals[i].type_name);
+        i = i + 1;
+    }
+    printf("  non-terminaux : %d\n", spec.nonterminal_count);
+    i = 0;
+    while (i < spec.nonterminal_count) {
+        printf("    %s : %s\n", &spec.nonterminals[i].name, &spec.nonterminals[i].type_name);
+        i = i + 1;
+    }
+    printf("  depart     : %s\n", &spec.start_name);
+    printf("  regles     : %d alternative(s)\n", spec.alt_count);
+    i = 0;
+    while (i < spec.alt_count) {
+        printf("    %2d: %s ->", i + 1, &spec.alts[i].lhs_name);
+        int j = 0;
+        while (j < spec.alts[i].rhs_len) {
+            printf(" %s", &spec.alts[i].rhs[j].sym_name);
+            char* lbl = &spec.alts[i].rhs[j].label;
+            if (lbl[0] != cast<char>(0)) { printf(":%s", lbl); }
+            j = j + 1;
+        }
+        printf("\n");
+        i = i + 1;
+    }
+    printf("\n");
+
+    Grammar g;
+    build_grammar_from_jcup_spec(&spec, &g);
+
+    Automaton a;
+    a.build(&g);
+    printf("Automate LR(0) : %d etat(s)\n", a.state_count);
+
+    SetTables sets;
+    sets.init();
+    sets.compute_nullable(&g);
+    sets.compute_first(&g);
+    int dollar_sym = find_symbol(&g, "$");
+    sets.compute_follow(&g, g.start_symbol, dollar_sym);
+
+    SLRTable table;
+    table.build(&g, &a, &sets, dollar_sym);
+    printf("Conflits detectes : %d\n\n", table.conflict_count);
+
+    printf("=== GENERATED PARSER START ===\n");
+    gen_parser_v2(&g, &a, &table, &spec, dollar_sym);
+    printf("=== GENERATED PARSER END ===\n");
+
+    return 0;
+}

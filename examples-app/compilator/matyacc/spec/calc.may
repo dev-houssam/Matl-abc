@@ -1,0 +1,30 @@
+terminal PLUS;
+terminal MINUS;
+terminal STAR;
+terminal SLASH;
+terminal LPAREN;
+terminal RPAREN;
+terminal int NUM;
+
+non terminal int expr;
+non terminal int term;
+non terminal int factor;
+
+start with expr;
+
+expr ::=
+      expr:a PLUS term:b  { RESULT = a + b; }
+    | expr:a MINUS term:b { RESULT = a - b; }
+    | term:a               { RESULT = a; }
+    ;
+
+term ::=
+      term:a STAR factor:b  { RESULT = a * b; }
+    | term:a SLASH factor:b { RESULT = a / b; }
+    | factor:a               { RESULT = a; }
+    ;
+
+factor ::=
+      LPAREN expr:a RPAREN { RESULT = a; }
+    | NUM:n                 { RESULT = n; }
+    ;

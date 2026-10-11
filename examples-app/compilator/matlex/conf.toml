@@ -1,0 +1,19 @@
+[project]
+name        = "matlex"
+version     = "0.7.0"
+description = "matlex Round 7 -- struct Symbol, prologue en methodes, plus de %token"
+entry       = "src/symbol.mabc"
+
+[types]
+[dependencies]
+
+[backend]
+blas   = false
+lapack = false
+fft    = false
+llvm   = true
+
+[build]
+optimize     = true
+output       = "/tmp/matlex_out"
+strict_types = true

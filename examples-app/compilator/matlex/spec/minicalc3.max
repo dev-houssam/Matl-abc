@@ -1,0 +1,145 @@
+%{
+/* ---------------------------------------------------------------
+ * Methodes utilitaires : construisent un Symbol (type + position
+ * + valeur semantique optionnelle), a la maniere de symbol()/
+ * symbolObject() dans un lexer JFlex classique. Injectees comme
+ * methodes du scanner genere -- yyline/yycolumn/yytext() sont donc
+ * directement accessibles ici (matlex les reecrit en self.xxx).
+ *
+ * Les entiers de type de token (0, 1, 2, ...) sont pour l'instant
+ * des constantes brutes : dans un pipeline complet, elles viendraient
+ * du module "sym" genere par matyacc (comme sym.IF, sym.PLUS, ... en
+ * JFlex/CUP) -- matlex ne connait pas ces noms, seulement matyacc.
+ * --------------------------------------------------------------- */
+Symbol symbol(int t) {
+    Symbol s;
+    s.sym_type = t;
+    s.line = yyline;
+    s.column = yycolumn;
+    s.ivalue = 0;
+    return s;
+}
+
+Symbol symbolInt(int t, int v) {
+    Symbol s;
+    s.sym_type = t;
+    s.line = yyline;
+    s.column = yycolumn;
+    s.ivalue = v;
+    return s;
+}
+
+Symbol symbolStr(int t, str v) {
+    Symbol s;
+    s.sym_type = t;
+    s.line = yyline;
+    s.column = yycolumn;
+    s.svalue = v;
+    return s;
+}
+%}
+
+LETTRE  = [a-zA-Z_]
+CHIFFRE = [0-9]
+ID      = {LETTRE}({LETTRE}|{CHIFFRE})*
+ENTIER  = {CHIFFRE}+
+
+%%
+[ \t\n\r]+   { int skip = 0; }
+
+if           { return symbol(10); }
+else         { return symbol(11); }
+while        { return symbol(12); }
+
+{ENTIER}     { return symbolInt(1, atoi(yytext().data())); }
+{ID}         { return symbolStr(0, yytext()); }
+
+\+           { return symbol(20); }
+-            { return symbol(21); }
+\*           { return symbol(22); }
+/            { return symbol(23); }
+=            { return symbol(24); }
+;            { return symbol(25); }
+
+.            {
+                 printf("Caractere inconnu : '%s' ligne %d colonne %d\n",
+                        yytext().data(), yyline + 1, yycolumn + 1);
+             }
+%%
+
+/* ---------------------------------------------------------------
+ * Programme de demonstration : tokenise l'entree (fichier en
+ * argv[1], sinon stdin -- sentinelle "EOF" sur sa propre ligne, ou
+ * fin de flux normale) et affiche chaque Symbol produit.
+ * --------------------------------------------------------------- */
+int read_whole_file(char* path, char* buf, int cap) {
+    char* mode = "r";
+    char* f = fopen(path, mode);
+    if (f == null) { return -1; }
+    int off = 0;
+    char* got = fgets(buf + off, cap - off, f);
+    while (got != null) {
+        off = off + cast<int>(strlen(buf + off));
+        if (cap - off < 2) { got = null; } else { got = fgets(buf + off, cap - off, f); }
+    }
+    fclose(f);
+    buf[off] = cast<char>(0);
+    return off;
+}
+
+int main(int argc, char** argv) {
+    char[65536] buf;
+    int off = 0;
+
+    if (argc > 1) {
+        int n = read_whole_file(argv[1], &buf, 65536);
+        if (n < 0) {
+            printf("Erreur : impossible de lire '%s'\n", argv[1]);
+            return 1;
+        }
+    } else {
+        int done = 0;
+        while (done == 0) {
+            char[1024] line;
+            int lp = 0;
+            int c = getchar();
+            while (c != -1 && cast<char>(c) != cast<char>(10) && lp < 1023) {
+                line[lp] = cast<char>(c);
+                lp = lp + 1;
+                c = getchar();
+            }
+            line[lp] = cast<char>(0);
+            if (c == -1 && lp == 0) {
+                done = 1;
+            } else if (lp == 3 && line[0] == 'E' && line[1] == 'O' && line[2] == 'F') {
+                done = 1;
+            } else {
+                int i = 0;
+                while (i < lp && off < 65535) { buf[off] = line[i]; off = off + 1; i = i + 1; }
+                if (off < 65535) { buf[off] = cast<char>(10); off = off + 1; }
+                if (c == -1) { done = 1; }
+            }
+        }
+        buf[off] = cast<char>(0);
+    }
+
+    GenScanner sc;
+    sc.init(&buf);
+
+    printf("=== MiniCalc3 : tokenisation avec Symbol ===\n\n");
+
+    Symbol tok = sc.yylex();
+    while (tok.sym_type != -1) {
+        if (tok.sym_type == 0) {
+            printf("  IDENT   svalue='%s'  ligne %d colonne %d\n", tok.svalue.data(), tok.line, tok.column);
+        } else if (tok.sym_type == 1) {
+            printf("  ENTIER  ivalue=%d    ligne %d colonne %d\n", tok.ivalue, tok.line, tok.column);
+        } else {
+            printf("  SYMBOLE type=%-2d              ligne %d colonne %d\n", tok.sym_type, tok.line, tok.column);
+        }
+        tok = sc.yylex();
+    }
+
+    printf("\n=== fin ===\n");
+    return 0;
+}

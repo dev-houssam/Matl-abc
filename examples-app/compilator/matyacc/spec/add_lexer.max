@@ -1,0 +1,38 @@
+%{
+/* Scanner pour le test d'integration matlex <-> matyacc.
+   Utilise desormais sym.ADD / sym.NUMBER (enum genere par matyacc,
+   voir spec/add_parser.may) plutot que des entiers magiques
+   (symbol(0), symbol(1)) -- l'ordre des "terminal" cote matyacc fait
+   toujours foi, mais on ne depend plus d'avoir a le recompter a la
+   main a chaque modification de la grammaire : matyacc reste la
+   SEULE source de verite pour la numerotation des tokens, matlex se
+   contente de la REFERENCER par son nom symbolique.
+   Necessite de compiler ce scanner CONCATENE avec le parseur genere
+   (le enum "sym" doit etre visible dans la meme unite de compilation
+   -- voir projects/matyacc/docs/README.md, "integration automatique"). */
+Symbol symbol(int t) {
+    Symbol s;
+    s.sym_type = t;
+    s.line = yyline;
+    s.column = yycolumn;
+    s.ivalue = 0;
+    return s;
+}
+
+Symbol symbolInt(int t, int v) {
+    Symbol s;
+    s.sym_type = t;
+    s.line = yyline;
+    s.column = yycolumn;
+    s.ivalue = v;
+    return s;
+}
+%}
+
+CHIFFRE = [0-9]
+
+%%
+[ \t\n\r]+ { int skip = 0; }
+ADD        { return symbol(sym.ADD); }
+{CHIFFRE}+ { return symbolInt(sym.NUMBER, atoi(yytext().data())); }
+%%

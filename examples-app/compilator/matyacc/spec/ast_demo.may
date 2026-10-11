@@ -1,0 +1,52 @@
+parser code {
+    struct Node {
+        int   op;      /* 0 = feuille (nombre), 1 = addition, 2 = multiplication */
+        int   value;
+        Node* left;
+        Node* right;
+
+        void init(int o, int v, Node* l, Node* r) {
+            self.op = o;
+            self.value = v;
+            self.left = l;
+            self.right = r;
+        }
+    }
+
+    int eval_node(Node* n) {
+        if (n.op == 0) { return n.value; }
+        if (n.op == 1) { return self.eval_node(n.left) + self.eval_node(n.right); }
+        return self.eval_node(n.left) * self.eval_node(n.right);
+    }
+
+    void print_node(Node* n) {
+        if (n.op == 0) {
+            printf("%d", n.value);
+        } else {
+            char op_char = '+';
+            if (n.op == 2) { op_char = '*'; }
+            printf("(");
+            self.print_node(n.left);
+            printf(" %c ", op_char);
+            self.print_node(n.right);
+            printf(")");
+        }
+    }
+}
+
+terminal PLUS;
+terminal STAR;
+terminal int NUM;
+
+non terminal Node expr;
+
+start with expr;
+
+%left PLUS;
+%left STAR;
+
+expr ::=
+      expr:a PLUS expr:b { RESULT = new Node(1, 0, a, b); }
+    | expr:a STAR expr:b { RESULT = new Node(2, 0, a, b); }
+    | NUM:n                { RESULT = new Node(0, n, null, null); }
+    ;

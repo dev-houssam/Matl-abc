@@ -1,0 +1,383 @@
+/* =====================================================
+ * Scanner genere automatiquement par matlex (round 6, .max)
+ * NE PAS EDITER A LA MAIN -- regenerer depuis la spec .max
+ * ===================================================== */
+
+import <cstd>
+import <cstring>
+
+/* ---- prologue (%{ ... %}) ---- */
+/* Prologue : rien de special pour ce petit langage MiniCalc. */
+
+/* ---- constantes de token (%token), via #define ---- */
+#define TOK_IDENT 0
+#define TOK_INT 1
+#define TOK_FLOAT 2
+#define TOK_PLUS 3
+#define TOK_MINUS 4
+#define TOK_STAR 5
+#define TOK_SLASH 6
+#define TOK_LPAREN 7
+#define TOK_RPAREN 8
+#define TOK_ASSIGN 9
+#define TOK_SEMI 10
+struct GenScanner {
+    char* src;
+    int pos;
+    int len;
+    int[3584] trans;
+    int[14] is_final;
+    char[256] yytext_buf;
+    int yyleng_val;
+    int yychar_val;
+    int yyline;
+    int yycolumn;
+    int lex_state;
+
+    void init(char* source) {
+        self.src = source;
+        self.pos = 0;
+        self.len = cast<int>(strlen(source));
+        self.yychar_val = 0;
+        self.yyline = 0;
+        self.yycolumn = 0;
+        self.lex_state = 0;
+        int i = 0;
+        while (i < 3584) { self.trans[i] = -1; i = i + 1; }
+        self.trans[9] = 1;
+        self.trans[10] = 1;
+        self.trans[13] = 1;
+        self.trans[32] = 1;
+        self.trans[40] = 2;
+        self.trans[41] = 3;
+        self.trans[42] = 4;
+        self.trans[43] = 5;
+        self.trans[45] = 6;
+        self.trans[47] = 7;
+        self.trans[48] = 8;
+        self.trans[49] = 8;
+        self.trans[50] = 8;
+        self.trans[51] = 8;
+        self.trans[52] = 8;
+        self.trans[53] = 8;
+        self.trans[54] = 8;
+        self.trans[55] = 8;
+        self.trans[56] = 8;
+        self.trans[57] = 8;
+        self.trans[59] = 9;
+        self.trans[61] = 10;
+        self.trans[65] = 11;
+        self.trans[66] = 11;
+        self.trans[67] = 11;
+        self.trans[68] = 11;
+        self.trans[69] = 11;
+        self.trans[70] = 11;
+        self.trans[71] = 11;
+        self.trans[72] = 11;
+        self.trans[73] = 11;
+        self.trans[74] = 11;
+        self.trans[75] = 11;
+        self.trans[76] = 11;
+        self.trans[77] = 11;
+        self.trans[78] = 11;
+        self.trans[79] = 11;
+        self.trans[80] = 11;
+        self.trans[81] = 11;
+        self.trans[82] = 11;
+        self.trans[83] = 11;
+        self.trans[84] = 11;
+        self.trans[85] = 11;
+        self.trans[86] = 11;
+        self.trans[87] = 11;
+        self.trans[88] = 11;
+        self.trans[89] = 11;
+        self.trans[90] = 11;
+        self.trans[95] = 11;
+        self.trans[97] = 11;
+        self.trans[98] = 11;
+        self.trans[99] = 11;
+        self.trans[100] = 11;
+        self.trans[101] = 11;
+        self.trans[102] = 11;
+        self.trans[103] = 11;
+        self.trans[104] = 11;
+        self.trans[105] = 11;
+        self.trans[106] = 11;
+        self.trans[107] = 11;
+        self.trans[108] = 11;
+        self.trans[109] = 11;
+        self.trans[110] = 11;
+        self.trans[111] = 11;
+        self.trans[112] = 11;
+        self.trans[113] = 11;
+        self.trans[114] = 11;
+        self.trans[115] = 11;
+        self.trans[116] = 11;
+        self.trans[117] = 11;
+        self.trans[118] = 11;
+        self.trans[119] = 11;
+        self.trans[120] = 11;
+        self.trans[121] = 11;
+        self.trans[122] = 11;
+        self.trans[265] = 1;
+        self.trans[266] = 1;
+        self.trans[269] = 1;
+        self.trans[288] = 1;
+        self.trans[2094] = 12;
+        self.trans[2096] = 8;
+        self.trans[2097] = 8;
+        self.trans[2098] = 8;
+        self.trans[2099] = 8;
+        self.trans[2100] = 8;
+        self.trans[2101] = 8;
+        self.trans[2102] = 8;
+        self.trans[2103] = 8;
+        self.trans[2104] = 8;
+        self.trans[2105] = 8;
+        self.trans[2864] = 11;
+        self.trans[2865] = 11;
+        self.trans[2866] = 11;
+        self.trans[2867] = 11;
+        self.trans[2868] = 11;
+        self.trans[2869] = 11;
+        self.trans[2870] = 11;
+        self.trans[2871] = 11;
+        self.trans[2872] = 11;
+        self.trans[2873] = 11;
+        self.trans[2881] = 11;
+        self.trans[2882] = 11;
+        self.trans[2883] = 11;
+        self.trans[2884] = 11;
+        self.trans[2885] = 11;
+        self.trans[2886] = 11;
+        self.trans[2887] = 11;
+        self.trans[2888] = 11;
+        self.trans[2889] = 11;
+        self.trans[2890] = 11;
+        self.trans[2891] = 11;
+        self.trans[2892] = 11;
+        self.trans[2893] = 11;
+        self.trans[2894] = 11;
+        self.trans[2895] = 11;
+        self.trans[2896] = 11;
+        self.trans[2897] = 11;
+        self.trans[2898] = 11;
+        self.trans[2899] = 11;
+        self.trans[2900] = 11;
+        self.trans[2901] = 11;
+        self.trans[2902] = 11;
+        self.trans[2903] = 11;
+        self.trans[2904] = 11;
+        self.trans[2905] = 11;
+        self.trans[2906] = 11;
+        self.trans[2911] = 11;
+        self.trans[2913] = 11;
+        self.trans[2914] = 11;
+        self.trans[2915] = 11;
+        self.trans[2916] = 11;
+        self.trans[2917] = 11;
+        self.trans[2918] = 11;
+        self.trans[2919] = 11;
+        self.trans[2920] = 11;
+        self.trans[2921] = 11;
+        self.trans[2922] = 11;
+        self.trans[2923] = 11;
+        self.trans[2924] = 11;
+        self.trans[2925] = 11;
+        self.trans[2926] = 11;
+        self.trans[2927] = 11;
+        self.trans[2928] = 11;
+        self.trans[2929] = 11;
+        self.trans[2930] = 11;
+        self.trans[2931] = 11;
+        self.trans[2932] = 11;
+        self.trans[2933] = 11;
+        self.trans[2934] = 11;
+        self.trans[2935] = 11;
+        self.trans[2936] = 11;
+        self.trans[2937] = 11;
+        self.trans[2938] = 11;
+        self.trans[3120] = 13;
+        self.trans[3121] = 13;
+        self.trans[3122] = 13;
+        self.trans[3123] = 13;
+        self.trans[3124] = 13;
+        self.trans[3125] = 13;
+        self.trans[3126] = 13;
+        self.trans[3127] = 13;
+        self.trans[3128] = 13;
+        self.trans[3129] = 13;
+        self.trans[3376] = 13;
+        self.trans[3377] = 13;
+        self.trans[3378] = 13;
+        self.trans[3379] = 13;
+        self.trans[3380] = 13;
+        self.trans[3381] = 13;
+        self.trans[3382] = 13;
+        self.trans[3383] = 13;
+        self.trans[3384] = 13;
+        self.trans[3385] = 13;
+        self.is_final[0] = -1;
+        self.is_final[1] = 0;
+        self.is_final[2] = 8;
+        self.is_final[3] = 9;
+        self.is_final[4] = 6;
+        self.is_final[5] = 4;
+        self.is_final[6] = 5;
+        self.is_final[7] = 7;
+        self.is_final[8] = 3;
+        self.is_final[9] = 11;
+        self.is_final[10] = 10;
+        self.is_final[11] = 1;
+        self.is_final[12] = -1;
+        self.is_final[13] = 2;
+    }
+
+    int at_end() { return self.pos >= self.len; }
+
+    int step(int state, char c) {
+        int b = cast<int>(c);
+        if (b < 0) { return -1; }
+        return self.trans[state * 256 + b];
+    }
+
+    /* API JFlex -- champs/methodes exposes a l'utilisateur */
+    str yytext() { return &self.yytext_buf; }
+    int yylength() { return self.yyleng_val; }
+    int yychar() { return self.yychar_val; }
+    int yystate() { return self.lex_state; }
+    void yybegin(int s) { self.lex_state = s; }
+    void yypushback(int n) {
+        self.pos = self.pos - n;
+        if (self.pos < 0) { self.pos = 0; }
+    }
+    void yyreset(char* new_source) {
+        self.init(new_source);
+    }
+
+    /* Avance yyline/yycolumn de n caracteres a partir de self.pos. */
+    void advance_line_col(int n) {
+        int i = 0;
+        while (i < n) {
+            char c = self.src[self.pos + i];
+            if (c == cast<char>(10)) { self.yyline = self.yyline + 1; self.yycolumn = 0; }
+            else { self.yycolumn = self.yycolumn + 1; }
+            i = i + 1;
+        }
+    }
+
+    /* Une passe de maximal munch ; remplit yytext_buf/yyleng_val.
+       Retourne l'id de regle gagnante, ou -1 si aucune regle
+       n'accepte (erreur lexicale -- 1 caractere consomme). */
+    int scan_one() {
+        self.yychar_val = self.pos;
+        int state = 0;
+        int best_rule = -1;
+        int best_i = 0;
+        int i = 0;
+        while (self.pos + i < self.len) {
+            char c = self.src[self.pos + i];
+            int nstate = self.step(state, c);
+            if (nstate == -1) { break; }
+            state = nstate;
+            i = i + 1;
+            if (self.is_final[state] != -1) { best_rule = self.is_final[state]; best_i = i; }
+        }
+        if (best_rule == -1) {
+            self.yyleng_val = 1;
+            self.yytext_buf[0] = self.src[self.pos];
+            self.yytext_buf[1] = cast<char>(0);
+            self.advance_line_col(1);
+            self.pos = self.pos + 1;
+            return -1;
+        }
+        self.yyleng_val = best_i;
+        int k = 0;
+        while (k < best_i && k < 255) { self.yytext_buf[k] = self.src[self.pos + k]; k = k + 1; }
+        self.yytext_buf[k] = cast<char>(0);
+        self.advance_line_col(best_i);
+        self.pos = self.pos + best_i;
+        return best_rule;
+    }
+
+    /* yylex() : boucle de scan style flex/JFlex. -1 = fin d'entree. */
+    int yylex() {
+        int cont = 1;
+        int result = -1;
+        while (cont == 1) {
+            if (self.at_end()) {
+                cont = 0;
+            } else {
+                int rid = self.scan_one();
+                if (rid == -1) {
+                    int lex_err = 1;
+                } else if (rid == 0) { int skip = 0; }
+                else if (rid == 1) { return TOK_IDENT; }
+                else if (rid == 2) { return TOK_FLOAT; }
+                else if (rid == 3) { return TOK_INT; }
+                else if (rid == 4) { return TOK_PLUS; }
+                else if (rid == 5) { return TOK_MINUS; }
+                else if (rid == 6) { return TOK_STAR; }
+                else if (rid == 7) { return TOK_SLASH; }
+                else if (rid == 8) { return TOK_LPAREN; }
+                else if (rid == 9) { return TOK_RPAREN; }
+                else if (rid == 10) { return TOK_ASSIGN; }
+                else if (rid == 11) { return TOK_SEMI; }
+            }
+        }
+        return result;
+    }
+}
+
+int read_whole_file(char* path, char* buf, int cap) {
+    char* mode = "r";
+    char* f = fopen(path, mode);
+    if (f == null) { return -1; }
+    int off = 0;
+    char* got = fgets(buf + off, cap - off, f);
+    while (got != null) {
+        off = off + cast<int>(strlen(buf + off));
+        if (cap - off < 2) { got = null; } else { got = fgets(buf + off, cap - off, f); }
+    }
+    fclose(f);
+    buf[off] = cast<char>(0);
+    return off;
+}
+
+int main(int argc, char** argv) {
+    char[65536] buf;
+    int off = 0;
+
+    if (argc > 1) {
+        int n = read_whole_file(argv[1], &buf, 65536);
+        if (n < 0) { printf("Erreur : impossible de lire '%s'\n", argv[1]); return 1; }
+    } else {
+        int done = 0;
+        while (done == 0) {
+            char[1024] line;
+            int lp = 0;
+            int c = getchar();
+            while (c != -1 && cast<char>(c) != cast<char>(10) && lp < 1023) { line[lp] = cast<char>(c); lp = lp + 1; c = getchar(); }
+            line[lp] = cast<char>(0);
+            if (c == -1 && lp == 0) { done = 1; }
+            else if (lp == 3 && line[0] == 'E' && line[1] == 'O' && line[2] == 'F') { done = 1; }
+            else {
+                int i = 0;
+                while (i < lp && off < 65535) { buf[off] = line[i]; off = off + 1; i = i + 1; }
+                if (off < 65535) { buf[off] = cast<char>(10); off = off + 1; }
+                if (c == -1) { done = 1; }
+            }
+        }
+        buf[off] = cast<char>(0);
+    }
+
+    GenScanner sc;
+    sc.init(&buf);
+
+    int tok = sc.yylex();
+    while (tok != -1) {
+        printf("token = %d  (yytext = '%s', ligne %d, colonne %d)\n", tok, sc.yytext().data(), sc.yyline, sc.yycolumn);
+        tok = sc.yylex();
+    }
+    return 0;
+}

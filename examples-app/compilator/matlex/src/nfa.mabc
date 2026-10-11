@@ -1,0 +1,360 @@
+/* ===========================================================
+ * matlex — generateur de lexer pour MATL-ABC (equivalent flex/JFlex)
+ * ===========================================================
+ * ROUND 1 : moteur regex -> NFA (construction de Thompson)
+ *
+ * Grammaire regex supportee (round 1) :
+ *   union    := concat ('|' concat)*
+ *   concat   := repeat+
+ *   repeat   := atom ('*' | '+' | '?')?
+ *   atom     := '(' union ')' | '\' any_char | literal_char
+ *
+ * Pas encore supporte (prevu round 2) : classes [a-z], '.' (any),
+ * ancres ^ $, quantificateurs {n,m}.
+ *
+ * Architecture :
+ *   - NFA        : arene a capacite fixe (etats + transitions),
+ *                  pas d'allocation dynamique de listes/vecteurs
+ *                  (idiome MATL-ABC : tableaux fixes + compteur,
+ *                  comme les structs a capacite bornee deja
+ *                  utilisees dans le compilateur lui-meme).
+ *   - Frag       : fragment de Thompson (etat de depart / etat
+ *                  d'acceptation), retourne PAR VALEUR par les
+ *                  constructeurs frag_*().
+ *   - RegexParser: descente recursive sur le pattern, construit
+ *                  le NFA directement (pas d'AST regex intermediaire
+ *                  au round 1 : chaque regle grammaticale emet son
+ *                  fragment Thompson au fur et a mesure).
+ *
+ * Transitions : trans_is_eps=1 => transition epsilon (trans_sym
+ * ignore). trans_is_eps=0 => transition sur le caractere trans_sym.
+ * =========================================================== */
+
+import <cstd>
+import <cstring>
+
+const int NFA_MAX_STATES = 4096;
+const int NFA_MAX_TRANS  = 8192;
+
+struct Frag {
+    int start;
+    int accept;
+}
+
+struct NFA {
+    int  state_count;
+    int  trans_count;
+    int  start;
+    int  accept;
+
+    int[4096]      trans_from;
+    int[4096]      trans_to;
+    char[4096]     trans_sym;
+    int[4096]      trans_is_eps;
+
+    void init() {
+        self.state_count = 0;
+        self.trans_count = 0;
+        self.start       = -1;
+        self.accept      = -1;
+    }
+
+    int new_state() {
+        int id = self.state_count;
+        self.state_count = self.state_count + 1;
+        return id;
+    }
+
+    void add_edge(int from, int to, char sym, int is_eps) {
+        int i = self.trans_count;
+        self.trans_from[i]    = from;
+        self.trans_to[i]      = to;
+        self.trans_sym[i]     = sym;
+        self.trans_is_eps[i]  = is_eps;
+        self.trans_count      = i + 1;
+    }
+
+    /* Cloture epsilon in-place sur un ensemble represente par un
+       tableau d'appartenance (set[i]==1 <=> etat i present). */
+    void eps_closure(int* set) {
+        int changed = 1;
+        while (changed == 1) {
+            changed = 0;
+            int i = 0;
+            while (i < self.trans_count) {
+                if (self.trans_is_eps[i] == 1) {
+                    int from = self.trans_from[i];
+                    int to   = self.trans_to[i];
+                    if (set[from] == 1 && set[to] == 0) {
+                        set[to] = 1;
+                        changed = 1;
+                    }
+                }
+                i = i + 1;
+            }
+        }
+    }
+
+    /* Simulation directe du NFA (sans passer par un DFA -- round 2).
+       Retourne 1 si 'input' est reconnu integralement par le
+       langage du NFA, 0 sinon. */
+    int matches(char* input) {
+        int n = cast<int>(strlen(input));
+
+        int[4096] cur;
+        int i = 0;
+        while (i < self.state_count) { cur[i] = 0; i = i + 1; }
+        cur[self.start] = 1;
+        self.eps_closure(&cur);
+
+        int pos = 0;
+        while (pos < n) {
+            char c = input[pos];
+            int[4096] nxt;
+            int j = 0;
+            while (j < self.state_count) { nxt[j] = 0; j = j + 1; }
+
+            int k = 0;
+            while (k < self.trans_count) {
+                if (self.trans_is_eps[k] == 0) {
+                    if (cur[self.trans_from[k]] == 1 && self.trans_sym[k] == c) {
+                        nxt[self.trans_to[k]] = 1;
+                    }
+                }
+                k = k + 1;
+            }
+            self.eps_closure(&nxt);
+
+            int m = 0;
+            while (m < self.state_count) { cur[m] = nxt[m]; m = m + 1; }
+            pos = pos + 1;
+        }
+
+        return cur[self.accept];
+    }
+}
+
+struct RegexParser {
+    char* pat;
+    int   pos;
+    int   len;
+    NFA*  nfa;
+
+    void init(char* pattern, NFA* target) {
+        self.pat = pattern;
+        self.pos = 0;
+        self.len = cast<int>(strlen(pattern));
+        self.nfa = target;
+    }
+
+    int at_end() {
+        return self.pos >= self.len;
+    }
+
+    char peek() {
+        if (self.at_end()) return cast<char>(0);
+        return self.pat[self.pos];
+    }
+
+    char advance() {
+        char c = self.pat[self.pos];
+        self.pos = self.pos + 1;
+        return c;
+    }
+
+    /* ---- constructeurs de fragments Thompson ---- */
+
+    Frag frag_char(char c) {
+        int s = self.nfa.new_state();
+        int a = self.nfa.new_state();
+        self.nfa.add_edge(s, a, c, 0);
+        Frag f;
+        f.start  = s;
+        f.accept = a;
+        return f;
+    }
+
+    Frag frag_concat(Frag a, Frag b) {
+        self.nfa.add_edge(a.accept, b.start, cast<char>(0), 1);
+        Frag f;
+        f.start  = a.start;
+        f.accept = b.accept;
+        return f;
+    }
+
+    Frag frag_union(Frag a, Frag b) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(s, b.start, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        self.nfa.add_edge(b.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = s;
+        f.accept = acc;
+        return f;
+    }
+
+    Frag frag_star(Frag a) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(s, acc, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = s;
+        f.accept = acc;
+        return f;
+    }
+
+    Frag frag_plus(Frag a) {
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(a.accept, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = a.start;
+        f.accept = acc;
+        return f;
+    }
+
+    Frag frag_optional(Frag a) {
+        int s   = self.nfa.new_state();
+        int acc = self.nfa.new_state();
+        self.nfa.add_edge(s, a.start, cast<char>(0), 1);
+        self.nfa.add_edge(s, acc, cast<char>(0), 1);
+        self.nfa.add_edge(a.accept, acc, cast<char>(0), 1);
+        Frag f;
+        f.start  = s;
+        f.accept = acc;
+        return f;
+    }
+
+    /* ---- descente recursive ---- */
+
+    Frag parse_atom() {
+        char c = self.peek();
+        if (c == '(') {
+            self.advance();
+            Frag f = self.parse_union();
+            if (self.peek() == ')') { self.advance(); }
+            return f;
+        }
+        if (c == '\\') {
+            self.advance();
+            char e = self.advance();
+            return self.frag_char(e);
+        }
+        self.advance();
+        return self.frag_char(c);
+    }
+
+    Frag parse_repeat() {
+        Frag a = self.parse_atom();
+        if (!self.at_end()) {
+            char c = self.peek();
+            if (c == '*') { self.advance(); return self.frag_star(a); }
+            if (c == '+') { self.advance(); return self.frag_plus(a); }
+            if (c == '?') { self.advance(); return self.frag_optional(a); }
+        }
+        return a;
+    }
+
+    Frag parse_concat() {
+        Frag left = self.parse_repeat();
+        while (!self.at_end() && self.peek() != '|' && self.peek() != ')') {
+            Frag right = self.parse_repeat();
+            left = self.frag_concat(left, right);
+        }
+        return left;
+    }
+
+    Frag parse_union() {
+        Frag left = self.parse_concat();
+        while (!self.at_end() && self.peek() == '|') {
+            self.advance();
+            Frag right = self.parse_concat();
+            left = self.frag_union(left, right);
+        }
+        return left;
+    }
+
+    /* Point d'entree : compile 'pattern' dans self.nfa et pose
+       nfa.start / nfa.accept. */
+    void compile() {
+        Frag f = self.parse_union();
+        self.nfa.start  = f.start;
+        self.nfa.accept = f.accept;
+    }
+}
+
+/* ---- harnais de test ---- */
+
+void test_pattern(char* pattern, char* input, int expected) {
+    NFA nfa;
+    nfa.init();
+    RegexParser p;
+    p.init(pattern, &nfa);
+    p.compile();
+
+    int got = nfa.matches(input);
+    str verdict = "OK";
+    if (got != expected) { verdict = "FAIL"; }
+
+    printf("  [%s] /%s/ vs \"%s\" -> %d (attendu %d) [%d etats, %d transitions]\n",
+           verdict.data(), pattern, input, got, expected, nfa.state_count, nfa.trans_count);
+}
+
+int main() {
+    /* NOTE : print()/println() emettent via write() direct (non
+       bufferise), alors que printf() passe par le buffer libc
+       (flush a la fin du programme). Les melanger desynchronise
+       l'ordre d'affichage -- on utilise donc printf() partout ici
+       pour garder un ordre chronologique correct. */
+    printf("=== matlex Round 1 : moteur regex -> NFA (Thompson) ===\n\n");
+
+    /* Litteraux et concatenation */
+    test_pattern("abc", "abc", 1);
+    test_pattern("abc", "abd", 0);
+    test_pattern("abc", "ab", 0);
+
+    /* Alternation */
+    test_pattern("a|b", "a", 1);
+    test_pattern("a|b", "b", 1);
+    test_pattern("a|b", "c", 0);
+    test_pattern("cat|dog", "dog", 1);
+    test_pattern("cat|dog", "cat", 1);
+    test_pattern("cat|dog", "cow", 0);
+
+    /* Etoile */
+    test_pattern("a*", "", 1);
+    test_pattern("a*", "aaaa", 1);
+    test_pattern("a*", "aaab", 0);
+    test_pattern("ab*c", "ac", 1);
+    test_pattern("ab*c", "abbbbc", 1);
+    test_pattern("ab*c", "abbbbd", 0);
+
+    /* Plus */
+    test_pattern("a+", "", 0);
+    test_pattern("a+", "a", 1);
+    test_pattern("a+", "aaa", 1);
+
+    /* Optionnel */
+    test_pattern("colou?r", "color", 1);
+    test_pattern("colou?r", "colour", 1);
+    test_pattern("colou?r", "colouur", 0);
+
+    /* Groupement + repetition de groupe */
+    test_pattern("(ab)+", "ab", 1);
+    test_pattern("(ab)+", "ababab", 1);
+    test_pattern("(ab)+", "aba", 0);
+    test_pattern("(a|b)*c", "aabbabc", 1);
+    test_pattern("(a|b)*c", "aabbab", 0);
+
+    /* Echappement */
+    test_pattern("a\\*b", "a*b", 1);
+    test_pattern("a\\*b", "aab", 0);
+
+    printf("\n=== Fin Round 1 ===\n");
+    return 0;
+}

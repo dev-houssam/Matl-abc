@@ -1,0 +1,1319 @@
+/* =====================================================
+ * Scanner genere automatiquement par matlex (round 7, .max)
+ * NE PAS EDITER A LA MAIN -- regenerer depuis la spec .max
+ * ===================================================== */
+
+import <cstd>
+import <cstring>
+
+/* Symbol : transporte un token vers un futur parser matyacc
+   (type + position + valeur semantique optionnelle), a la
+   maniere du Symbol de CUP consomme par un lexer JFlex. Le
+   TYPE reste un simple entier : matlex ne connait pas les
+   noms symboliques des tokens, c'est le role de matyacc. */
+struct Symbol {
+    int sym_type;
+    int line;
+    int column;
+    int ivalue;
+    str svalue;
+}
+
+struct GenScanner {
+    char* src;
+    int pos;
+    int len;
+    int[5632] trans;
+    int[22] is_final;
+    char[256] yytext_buf;
+    int yyleng_val;
+    int yychar_val;
+    int yyline;
+    int yycolumn;
+    int lex_state;
+
+    void init(char* source) {
+        self.src = source;
+        self.pos = 0;
+        self.len = cast<int>(strlen(source));
+        self.yychar_val = 0;
+        self.yyline = 0;
+        self.yycolumn = 0;
+        self.lex_state = 0;
+        int i = 0;
+        while (i < 5632) { self.trans[i] = -1; i = i + 1; }
+        self.trans[0] = 1;
+        self.trans[1] = 1;
+        self.trans[2] = 1;
+        self.trans[3] = 1;
+        self.trans[4] = 1;
+        self.trans[5] = 1;
+        self.trans[6] = 1;
+        self.trans[7] = 1;
+        self.trans[8] = 1;
+        self.trans[9] = 2;
+        self.trans[10] = 2;
+        self.trans[11] = 1;
+        self.trans[12] = 1;
+        self.trans[13] = 2;
+        self.trans[14] = 1;
+        self.trans[15] = 1;
+        self.trans[16] = 1;
+        self.trans[17] = 1;
+        self.trans[18] = 1;
+        self.trans[19] = 1;
+        self.trans[20] = 1;
+        self.trans[21] = 1;
+        self.trans[22] = 1;
+        self.trans[23] = 1;
+        self.trans[24] = 1;
+        self.trans[25] = 1;
+        self.trans[26] = 1;
+        self.trans[27] = 1;
+        self.trans[28] = 1;
+        self.trans[29] = 1;
+        self.trans[30] = 1;
+        self.trans[31] = 1;
+        self.trans[32] = 2;
+        self.trans[33] = 1;
+        self.trans[34] = 1;
+        self.trans[35] = 1;
+        self.trans[36] = 1;
+        self.trans[37] = 1;
+        self.trans[38] = 1;
+        self.trans[39] = 1;
+        self.trans[40] = 1;
+        self.trans[41] = 1;
+        self.trans[42] = 3;
+        self.trans[43] = 4;
+        self.trans[44] = 1;
+        self.trans[45] = 5;
+        self.trans[46] = 1;
+        self.trans[47] = 6;
+        self.trans[48] = 7;
+        self.trans[49] = 7;
+        self.trans[50] = 7;
+        self.trans[51] = 7;
+        self.trans[52] = 7;
+        self.trans[53] = 7;
+        self.trans[54] = 7;
+        self.trans[55] = 7;
+        self.trans[56] = 7;
+        self.trans[57] = 7;
+        self.trans[58] = 1;
+        self.trans[59] = 8;
+        self.trans[60] = 1;
+        self.trans[61] = 9;
+        self.trans[62] = 1;
+        self.trans[63] = 1;
+        self.trans[64] = 1;
+        self.trans[65] = 10;
+        self.trans[66] = 10;
+        self.trans[67] = 10;
+        self.trans[68] = 10;
+        self.trans[69] = 10;
+        self.trans[70] = 10;
+        self.trans[71] = 10;
+        self.trans[72] = 10;
+        self.trans[73] = 10;
+        self.trans[74] = 10;
+        self.trans[75] = 10;
+        self.trans[76] = 10;
+        self.trans[77] = 10;
+        self.trans[78] = 10;
+        self.trans[79] = 10;
+        self.trans[80] = 10;
+        self.trans[81] = 10;
+        self.trans[82] = 10;
+        self.trans[83] = 10;
+        self.trans[84] = 10;
+        self.trans[85] = 10;
+        self.trans[86] = 10;
+        self.trans[87] = 10;
+        self.trans[88] = 10;
+        self.trans[89] = 10;
+        self.trans[90] = 10;
+        self.trans[91] = 1;
+        self.trans[92] = 1;
+        self.trans[93] = 1;
+        self.trans[94] = 1;
+        self.trans[95] = 10;
+        self.trans[96] = 1;
+        self.trans[97] = 10;
+        self.trans[98] = 10;
+        self.trans[99] = 10;
+        self.trans[100] = 10;
+        self.trans[101] = 11;
+        self.trans[102] = 10;
+        self.trans[103] = 10;
+        self.trans[104] = 10;
+        self.trans[105] = 12;
+        self.trans[106] = 10;
+        self.trans[107] = 10;
+        self.trans[108] = 10;
+        self.trans[109] = 10;
+        self.trans[110] = 10;
+        self.trans[111] = 10;
+        self.trans[112] = 10;
+        self.trans[113] = 10;
+        self.trans[114] = 10;
+        self.trans[115] = 10;
+        self.trans[116] = 10;
+        self.trans[117] = 10;
+        self.trans[118] = 10;
+        self.trans[119] = 13;
+        self.trans[120] = 10;
+        self.trans[121] = 10;
+        self.trans[122] = 10;
+        self.trans[123] = 1;
+        self.trans[124] = 1;
+        self.trans[125] = 1;
+        self.trans[126] = 1;
+        self.trans[127] = 1;
+        self.trans[128] = 1;
+        self.trans[129] = 1;
+        self.trans[130] = 1;
+        self.trans[131] = 1;
+        self.trans[132] = 1;
+        self.trans[133] = 1;
+        self.trans[134] = 1;
+        self.trans[135] = 1;
+        self.trans[136] = 1;
+        self.trans[137] = 1;
+        self.trans[138] = 1;
+        self.trans[139] = 1;
+        self.trans[140] = 1;
+        self.trans[141] = 1;
+        self.trans[142] = 1;
+        self.trans[143] = 1;
+        self.trans[144] = 1;
+        self.trans[145] = 1;
+        self.trans[146] = 1;
+        self.trans[147] = 1;
+        self.trans[148] = 1;
+        self.trans[149] = 1;
+        self.trans[150] = 1;
+        self.trans[151] = 1;
+        self.trans[152] = 1;
+        self.trans[153] = 1;
+        self.trans[154] = 1;
+        self.trans[155] = 1;
+        self.trans[156] = 1;
+        self.trans[157] = 1;
+        self.trans[158] = 1;
+        self.trans[159] = 1;
+        self.trans[160] = 1;
+        self.trans[161] = 1;
+        self.trans[162] = 1;
+        self.trans[163] = 1;
+        self.trans[164] = 1;
+        self.trans[165] = 1;
+        self.trans[166] = 1;
+        self.trans[167] = 1;
+        self.trans[168] = 1;
+        self.trans[169] = 1;
+        self.trans[170] = 1;
+        self.trans[171] = 1;
+        self.trans[172] = 1;
+        self.trans[173] = 1;
+        self.trans[174] = 1;
+        self.trans[175] = 1;
+        self.trans[176] = 1;
+        self.trans[177] = 1;
+        self.trans[178] = 1;
+        self.trans[179] = 1;
+        self.trans[180] = 1;
+        self.trans[181] = 1;
+        self.trans[182] = 1;
+        self.trans[183] = 1;
+        self.trans[184] = 1;
+        self.trans[185] = 1;
+        self.trans[186] = 1;
+        self.trans[187] = 1;
+        self.trans[188] = 1;
+        self.trans[189] = 1;
+        self.trans[190] = 1;
+        self.trans[191] = 1;
+        self.trans[192] = 1;
+        self.trans[193] = 1;
+        self.trans[194] = 1;
+        self.trans[195] = 1;
+        self.trans[196] = 1;
+        self.trans[197] = 1;
+        self.trans[198] = 1;
+        self.trans[199] = 1;
+        self.trans[200] = 1;
+        self.trans[201] = 1;
+        self.trans[202] = 1;
+        self.trans[203] = 1;
+        self.trans[204] = 1;
+        self.trans[205] = 1;
+        self.trans[206] = 1;
+        self.trans[207] = 1;
+        self.trans[208] = 1;
+        self.trans[209] = 1;
+        self.trans[210] = 1;
+        self.trans[211] = 1;
+        self.trans[212] = 1;
+        self.trans[213] = 1;
+        self.trans[214] = 1;
+        self.trans[215] = 1;
+        self.trans[216] = 1;
+        self.trans[217] = 1;
+        self.trans[218] = 1;
+        self.trans[219] = 1;
+        self.trans[220] = 1;
+        self.trans[221] = 1;
+        self.trans[222] = 1;
+        self.trans[223] = 1;
+        self.trans[224] = 1;
+        self.trans[225] = 1;
+        self.trans[226] = 1;
+        self.trans[227] = 1;
+        self.trans[228] = 1;
+        self.trans[229] = 1;
+        self.trans[230] = 1;
+        self.trans[231] = 1;
+        self.trans[232] = 1;
+        self.trans[233] = 1;
+        self.trans[234] = 1;
+        self.trans[235] = 1;
+        self.trans[236] = 1;
+        self.trans[237] = 1;
+        self.trans[238] = 1;
+        self.trans[239] = 1;
+        self.trans[240] = 1;
+        self.trans[241] = 1;
+        self.trans[242] = 1;
+        self.trans[243] = 1;
+        self.trans[244] = 1;
+        self.trans[245] = 1;
+        self.trans[246] = 1;
+        self.trans[247] = 1;
+        self.trans[248] = 1;
+        self.trans[249] = 1;
+        self.trans[250] = 1;
+        self.trans[251] = 1;
+        self.trans[252] = 1;
+        self.trans[253] = 1;
+        self.trans[254] = 1;
+        self.trans[255] = 1;
+        self.trans[521] = 2;
+        self.trans[522] = 2;
+        self.trans[525] = 2;
+        self.trans[544] = 2;
+        self.trans[1840] = 7;
+        self.trans[1841] = 7;
+        self.trans[1842] = 7;
+        self.trans[1843] = 7;
+        self.trans[1844] = 7;
+        self.trans[1845] = 7;
+        self.trans[1846] = 7;
+        self.trans[1847] = 7;
+        self.trans[1848] = 7;
+        self.trans[1849] = 7;
+        self.trans[2608] = 10;
+        self.trans[2609] = 10;
+        self.trans[2610] = 10;
+        self.trans[2611] = 10;
+        self.trans[2612] = 10;
+        self.trans[2613] = 10;
+        self.trans[2614] = 10;
+        self.trans[2615] = 10;
+        self.trans[2616] = 10;
+        self.trans[2617] = 10;
+        self.trans[2625] = 10;
+        self.trans[2626] = 10;
+        self.trans[2627] = 10;
+        self.trans[2628] = 10;
+        self.trans[2629] = 10;
+        self.trans[2630] = 10;
+        self.trans[2631] = 10;
+        self.trans[2632] = 10;
+        self.trans[2633] = 10;
+        self.trans[2634] = 10;
+        self.trans[2635] = 10;
+        self.trans[2636] = 10;
+        self.trans[2637] = 10;
+        self.trans[2638] = 10;
+        self.trans[2639] = 10;
+        self.trans[2640] = 10;
+        self.trans[2641] = 10;
+        self.trans[2642] = 10;
+        self.trans[2643] = 10;
+        self.trans[2644] = 10;
+        self.trans[2645] = 10;
+        self.trans[2646] = 10;
+        self.trans[2647] = 10;
+        self.trans[2648] = 10;
+        self.trans[2649] = 10;
+        self.trans[2650] = 10;
+        self.trans[2655] = 10;
+        self.trans[2657] = 10;
+        self.trans[2658] = 10;
+        self.trans[2659] = 10;
+        self.trans[2660] = 10;
+        self.trans[2661] = 10;
+        self.trans[2662] = 10;
+        self.trans[2663] = 10;
+        self.trans[2664] = 10;
+        self.trans[2665] = 10;
+        self.trans[2666] = 10;
+        self.trans[2667] = 10;
+        self.trans[2668] = 10;
+        self.trans[2669] = 10;
+        self.trans[2670] = 10;
+        self.trans[2671] = 10;
+        self.trans[2672] = 10;
+        self.trans[2673] = 10;
+        self.trans[2674] = 10;
+        self.trans[2675] = 10;
+        self.trans[2676] = 10;
+        self.trans[2677] = 10;
+        self.trans[2678] = 10;
+        self.trans[2679] = 10;
+        self.trans[2680] = 10;
+        self.trans[2681] = 10;
+        self.trans[2682] = 10;
+        self.trans[2864] = 10;
+        self.trans[2865] = 10;
+        self.trans[2866] = 10;
+        self.trans[2867] = 10;
+        self.trans[2868] = 10;
+        self.trans[2869] = 10;
+        self.trans[2870] = 10;
+        self.trans[2871] = 10;
+        self.trans[2872] = 10;
+        self.trans[2873] = 10;
+        self.trans[2881] = 10;
+        self.trans[2882] = 10;
+        self.trans[2883] = 10;
+        self.trans[2884] = 10;
+        self.trans[2885] = 10;
+        self.trans[2886] = 10;
+        self.trans[2887] = 10;
+        self.trans[2888] = 10;
+        self.trans[2889] = 10;
+        self.trans[2890] = 10;
+        self.trans[2891] = 10;
+        self.trans[2892] = 10;
+        self.trans[2893] = 10;
+        self.trans[2894] = 10;
+        self.trans[2895] = 10;
+        self.trans[2896] = 10;
+        self.trans[2897] = 10;
+        self.trans[2898] = 10;
+        self.trans[2899] = 10;
+        self.trans[2900] = 10;
+        self.trans[2901] = 10;
+        self.trans[2902] = 10;
+        self.trans[2903] = 10;
+        self.trans[2904] = 10;
+        self.trans[2905] = 10;
+        self.trans[2906] = 10;
+        self.trans[2911] = 10;
+        self.trans[2913] = 10;
+        self.trans[2914] = 10;
+        self.trans[2915] = 10;
+        self.trans[2916] = 10;
+        self.trans[2917] = 10;
+        self.trans[2918] = 10;
+        self.trans[2919] = 10;
+        self.trans[2920] = 10;
+        self.trans[2921] = 10;
+        self.trans[2922] = 10;
+        self.trans[2923] = 10;
+        self.trans[2924] = 14;
+        self.trans[2925] = 10;
+        self.trans[2926] = 10;
+        self.trans[2927] = 10;
+        self.trans[2928] = 10;
+        self.trans[2929] = 10;
+        self.trans[2930] = 10;
+        self.trans[2931] = 10;
+        self.trans[2932] = 10;
+        self.trans[2933] = 10;
+        self.trans[2934] = 10;
+        self.trans[2935] = 10;
+        self.trans[2936] = 10;
+        self.trans[2937] = 10;
+        self.trans[2938] = 10;
+        self.trans[3120] = 10;
+        self.trans[3121] = 10;
+        self.trans[3122] = 10;
+        self.trans[3123] = 10;
+        self.trans[3124] = 10;
+        self.trans[3125] = 10;
+        self.trans[3126] = 10;
+        self.trans[3127] = 10;
+        self.trans[3128] = 10;
+        self.trans[3129] = 10;
+        self.trans[3137] = 10;
+        self.trans[3138] = 10;
+        self.trans[3139] = 10;
+        self.trans[3140] = 10;
+        self.trans[3141] = 10;
+        self.trans[3142] = 10;
+        self.trans[3143] = 10;
+        self.trans[3144] = 10;
+        self.trans[3145] = 10;
+        self.trans[3146] = 10;
+        self.trans[3147] = 10;
+        self.trans[3148] = 10;
+        self.trans[3149] = 10;
+        self.trans[3150] = 10;
+        self.trans[3151] = 10;
+        self.trans[3152] = 10;
+        self.trans[3153] = 10;
+        self.trans[3154] = 10;
+        self.trans[3155] = 10;
+        self.trans[3156] = 10;
+        self.trans[3157] = 10;
+        self.trans[3158] = 10;
+        self.trans[3159] = 10;
+        self.trans[3160] = 10;
+        self.trans[3161] = 10;
+        self.trans[3162] = 10;
+        self.trans[3167] = 10;
+        self.trans[3169] = 10;
+        self.trans[3170] = 10;
+        self.trans[3171] = 10;
+        self.trans[3172] = 10;
+        self.trans[3173] = 10;
+        self.trans[3174] = 15;
+        self.trans[3175] = 10;
+        self.trans[3176] = 10;
+        self.trans[3177] = 10;
+        self.trans[3178] = 10;
+        self.trans[3179] = 10;
+        self.trans[3180] = 10;
+        self.trans[3181] = 10;
+        self.trans[3182] = 10;
+        self.trans[3183] = 10;
+        self.trans[3184] = 10;
+        self.trans[3185] = 10;
+        self.trans[3186] = 10;
+        self.trans[3187] = 10;
+        self.trans[3188] = 10;
+        self.trans[3189] = 10;
+        self.trans[3190] = 10;
+        self.trans[3191] = 10;
+        self.trans[3192] = 10;
+        self.trans[3193] = 10;
+        self.trans[3194] = 10;
+        self.trans[3376] = 10;
+        self.trans[3377] = 10;
+        self.trans[3378] = 10;
+        self.trans[3379] = 10;
+        self.trans[3380] = 10;
+        self.trans[3381] = 10;
+        self.trans[3382] = 10;
+        self.trans[3383] = 10;
+        self.trans[3384] = 10;
+        self.trans[3385] = 10;
+        self.trans[3393] = 10;
+        self.trans[3394] = 10;
+        self.trans[3395] = 10;
+        self.trans[3396] = 10;
+        self.trans[3397] = 10;
+        self.trans[3398] = 10;
+        self.trans[3399] = 10;
+        self.trans[3400] = 10;
+        self.trans[3401] = 10;
+        self.trans[3402] = 10;
+        self.trans[3403] = 10;
+        self.trans[3404] = 10;
+        self.trans[3405] = 10;
+        self.trans[3406] = 10;
+        self.trans[3407] = 10;
+        self.trans[3408] = 10;
+        self.trans[3409] = 10;
+        self.trans[3410] = 10;
+        self.trans[3411] = 10;
+        self.trans[3412] = 10;
+        self.trans[3413] = 10;
+        self.trans[3414] = 10;
+        self.trans[3415] = 10;
+        self.trans[3416] = 10;
+        self.trans[3417] = 10;
+        self.trans[3418] = 10;
+        self.trans[3423] = 10;
+        self.trans[3425] = 10;
+        self.trans[3426] = 10;
+        self.trans[3427] = 10;
+        self.trans[3428] = 10;
+        self.trans[3429] = 10;
+        self.trans[3430] = 10;
+        self.trans[3431] = 10;
+        self.trans[3432] = 16;
+        self.trans[3433] = 10;
+        self.trans[3434] = 10;
+        self.trans[3435] = 10;
+        self.trans[3436] = 10;
+        self.trans[3437] = 10;
+        self.trans[3438] = 10;
+        self.trans[3439] = 10;
+        self.trans[3440] = 10;
+        self.trans[3441] = 10;
+        self.trans[3442] = 10;
+        self.trans[3443] = 10;
+        self.trans[3444] = 10;
+        self.trans[3445] = 10;
+        self.trans[3446] = 10;
+        self.trans[3447] = 10;
+        self.trans[3448] = 10;
+        self.trans[3449] = 10;
+        self.trans[3450] = 10;
+        self.trans[3632] = 10;
+        self.trans[3633] = 10;
+        self.trans[3634] = 10;
+        self.trans[3635] = 10;
+        self.trans[3636] = 10;
+        self.trans[3637] = 10;
+        self.trans[3638] = 10;
+        self.trans[3639] = 10;
+        self.trans[3640] = 10;
+        self.trans[3641] = 10;
+        self.trans[3649] = 10;
+        self.trans[3650] = 10;
+        self.trans[3651] = 10;
+        self.trans[3652] = 10;
+        self.trans[3653] = 10;
+        self.trans[3654] = 10;
+        self.trans[3655] = 10;
+        self.trans[3656] = 10;
+        self.trans[3657] = 10;
+        self.trans[3658] = 10;
+        self.trans[3659] = 10;
+        self.trans[3660] = 10;
+        self.trans[3661] = 10;
+        self.trans[3662] = 10;
+        self.trans[3663] = 10;
+        self.trans[3664] = 10;
+        self.trans[3665] = 10;
+        self.trans[3666] = 10;
+        self.trans[3667] = 10;
+        self.trans[3668] = 10;
+        self.trans[3669] = 10;
+        self.trans[3670] = 10;
+        self.trans[3671] = 10;
+        self.trans[3672] = 10;
+        self.trans[3673] = 10;
+        self.trans[3674] = 10;
+        self.trans[3679] = 10;
+        self.trans[3681] = 10;
+        self.trans[3682] = 10;
+        self.trans[3683] = 10;
+        self.trans[3684] = 10;
+        self.trans[3685] = 10;
+        self.trans[3686] = 10;
+        self.trans[3687] = 10;
+        self.trans[3688] = 10;
+        self.trans[3689] = 10;
+        self.trans[3690] = 10;
+        self.trans[3691] = 10;
+        self.trans[3692] = 10;
+        self.trans[3693] = 10;
+        self.trans[3694] = 10;
+        self.trans[3695] = 10;
+        self.trans[3696] = 10;
+        self.trans[3697] = 10;
+        self.trans[3698] = 10;
+        self.trans[3699] = 17;
+        self.trans[3700] = 10;
+        self.trans[3701] = 10;
+        self.trans[3702] = 10;
+        self.trans[3703] = 10;
+        self.trans[3704] = 10;
+        self.trans[3705] = 10;
+        self.trans[3706] = 10;
+        self.trans[3888] = 10;
+        self.trans[3889] = 10;
+        self.trans[3890] = 10;
+        self.trans[3891] = 10;
+        self.trans[3892] = 10;
+        self.trans[3893] = 10;
+        self.trans[3894] = 10;
+        self.trans[3895] = 10;
+        self.trans[3896] = 10;
+        self.trans[3897] = 10;
+        self.trans[3905] = 10;
+        self.trans[3906] = 10;
+        self.trans[3907] = 10;
+        self.trans[3908] = 10;
+        self.trans[3909] = 10;
+        self.trans[3910] = 10;
+        self.trans[3911] = 10;
+        self.trans[3912] = 10;
+        self.trans[3913] = 10;
+        self.trans[3914] = 10;
+        self.trans[3915] = 10;
+        self.trans[3916] = 10;
+        self.trans[3917] = 10;
+        self.trans[3918] = 10;
+        self.trans[3919] = 10;
+        self.trans[3920] = 10;
+        self.trans[3921] = 10;
+        self.trans[3922] = 10;
+        self.trans[3923] = 10;
+        self.trans[3924] = 10;
+        self.trans[3925] = 10;
+        self.trans[3926] = 10;
+        self.trans[3927] = 10;
+        self.trans[3928] = 10;
+        self.trans[3929] = 10;
+        self.trans[3930] = 10;
+        self.trans[3935] = 10;
+        self.trans[3937] = 10;
+        self.trans[3938] = 10;
+        self.trans[3939] = 10;
+        self.trans[3940] = 10;
+        self.trans[3941] = 10;
+        self.trans[3942] = 10;
+        self.trans[3943] = 10;
+        self.trans[3944] = 10;
+        self.trans[3945] = 10;
+        self.trans[3946] = 10;
+        self.trans[3947] = 10;
+        self.trans[3948] = 10;
+        self.trans[3949] = 10;
+        self.trans[3950] = 10;
+        self.trans[3951] = 10;
+        self.trans[3952] = 10;
+        self.trans[3953] = 10;
+        self.trans[3954] = 10;
+        self.trans[3955] = 10;
+        self.trans[3956] = 10;
+        self.trans[3957] = 10;
+        self.trans[3958] = 10;
+        self.trans[3959] = 10;
+        self.trans[3960] = 10;
+        self.trans[3961] = 10;
+        self.trans[3962] = 10;
+        self.trans[4144] = 10;
+        self.trans[4145] = 10;
+        self.trans[4146] = 10;
+        self.trans[4147] = 10;
+        self.trans[4148] = 10;
+        self.trans[4149] = 10;
+        self.trans[4150] = 10;
+        self.trans[4151] = 10;
+        self.trans[4152] = 10;
+        self.trans[4153] = 10;
+        self.trans[4161] = 10;
+        self.trans[4162] = 10;
+        self.trans[4163] = 10;
+        self.trans[4164] = 10;
+        self.trans[4165] = 10;
+        self.trans[4166] = 10;
+        self.trans[4167] = 10;
+        self.trans[4168] = 10;
+        self.trans[4169] = 10;
+        self.trans[4170] = 10;
+        self.trans[4171] = 10;
+        self.trans[4172] = 10;
+        self.trans[4173] = 10;
+        self.trans[4174] = 10;
+        self.trans[4175] = 10;
+        self.trans[4176] = 10;
+        self.trans[4177] = 10;
+        self.trans[4178] = 10;
+        self.trans[4179] = 10;
+        self.trans[4180] = 10;
+        self.trans[4181] = 10;
+        self.trans[4182] = 10;
+        self.trans[4183] = 10;
+        self.trans[4184] = 10;
+        self.trans[4185] = 10;
+        self.trans[4186] = 10;
+        self.trans[4191] = 10;
+        self.trans[4193] = 10;
+        self.trans[4194] = 10;
+        self.trans[4195] = 10;
+        self.trans[4196] = 10;
+        self.trans[4197] = 10;
+        self.trans[4198] = 10;
+        self.trans[4199] = 10;
+        self.trans[4200] = 10;
+        self.trans[4201] = 18;
+        self.trans[4202] = 10;
+        self.trans[4203] = 10;
+        self.trans[4204] = 10;
+        self.trans[4205] = 10;
+        self.trans[4206] = 10;
+        self.trans[4207] = 10;
+        self.trans[4208] = 10;
+        self.trans[4209] = 10;
+        self.trans[4210] = 10;
+        self.trans[4211] = 10;
+        self.trans[4212] = 10;
+        self.trans[4213] = 10;
+        self.trans[4214] = 10;
+        self.trans[4215] = 10;
+        self.trans[4216] = 10;
+        self.trans[4217] = 10;
+        self.trans[4218] = 10;
+        self.trans[4400] = 10;
+        self.trans[4401] = 10;
+        self.trans[4402] = 10;
+        self.trans[4403] = 10;
+        self.trans[4404] = 10;
+        self.trans[4405] = 10;
+        self.trans[4406] = 10;
+        self.trans[4407] = 10;
+        self.trans[4408] = 10;
+        self.trans[4409] = 10;
+        self.trans[4417] = 10;
+        self.trans[4418] = 10;
+        self.trans[4419] = 10;
+        self.trans[4420] = 10;
+        self.trans[4421] = 10;
+        self.trans[4422] = 10;
+        self.trans[4423] = 10;
+        self.trans[4424] = 10;
+        self.trans[4425] = 10;
+        self.trans[4426] = 10;
+        self.trans[4427] = 10;
+        self.trans[4428] = 10;
+        self.trans[4429] = 10;
+        self.trans[4430] = 10;
+        self.trans[4431] = 10;
+        self.trans[4432] = 10;
+        self.trans[4433] = 10;
+        self.trans[4434] = 10;
+        self.trans[4435] = 10;
+        self.trans[4436] = 10;
+        self.trans[4437] = 10;
+        self.trans[4438] = 10;
+        self.trans[4439] = 10;
+        self.trans[4440] = 10;
+        self.trans[4441] = 10;
+        self.trans[4442] = 10;
+        self.trans[4447] = 10;
+        self.trans[4449] = 10;
+        self.trans[4450] = 10;
+        self.trans[4451] = 10;
+        self.trans[4452] = 10;
+        self.trans[4453] = 19;
+        self.trans[4454] = 10;
+        self.trans[4455] = 10;
+        self.trans[4456] = 10;
+        self.trans[4457] = 10;
+        self.trans[4458] = 10;
+        self.trans[4459] = 10;
+        self.trans[4460] = 10;
+        self.trans[4461] = 10;
+        self.trans[4462] = 10;
+        self.trans[4463] = 10;
+        self.trans[4464] = 10;
+        self.trans[4465] = 10;
+        self.trans[4466] = 10;
+        self.trans[4467] = 10;
+        self.trans[4468] = 10;
+        self.trans[4469] = 10;
+        self.trans[4470] = 10;
+        self.trans[4471] = 10;
+        self.trans[4472] = 10;
+        self.trans[4473] = 10;
+        self.trans[4474] = 10;
+        self.trans[4656] = 10;
+        self.trans[4657] = 10;
+        self.trans[4658] = 10;
+        self.trans[4659] = 10;
+        self.trans[4660] = 10;
+        self.trans[4661] = 10;
+        self.trans[4662] = 10;
+        self.trans[4663] = 10;
+        self.trans[4664] = 10;
+        self.trans[4665] = 10;
+        self.trans[4673] = 10;
+        self.trans[4674] = 10;
+        self.trans[4675] = 10;
+        self.trans[4676] = 10;
+        self.trans[4677] = 10;
+        self.trans[4678] = 10;
+        self.trans[4679] = 10;
+        self.trans[4680] = 10;
+        self.trans[4681] = 10;
+        self.trans[4682] = 10;
+        self.trans[4683] = 10;
+        self.trans[4684] = 10;
+        self.trans[4685] = 10;
+        self.trans[4686] = 10;
+        self.trans[4687] = 10;
+        self.trans[4688] = 10;
+        self.trans[4689] = 10;
+        self.trans[4690] = 10;
+        self.trans[4691] = 10;
+        self.trans[4692] = 10;
+        self.trans[4693] = 10;
+        self.trans[4694] = 10;
+        self.trans[4695] = 10;
+        self.trans[4696] = 10;
+        self.trans[4697] = 10;
+        self.trans[4698] = 10;
+        self.trans[4703] = 10;
+        self.trans[4705] = 10;
+        self.trans[4706] = 10;
+        self.trans[4707] = 10;
+        self.trans[4708] = 10;
+        self.trans[4709] = 10;
+        self.trans[4710] = 10;
+        self.trans[4711] = 10;
+        self.trans[4712] = 10;
+        self.trans[4713] = 10;
+        self.trans[4714] = 10;
+        self.trans[4715] = 10;
+        self.trans[4716] = 20;
+        self.trans[4717] = 10;
+        self.trans[4718] = 10;
+        self.trans[4719] = 10;
+        self.trans[4720] = 10;
+        self.trans[4721] = 10;
+        self.trans[4722] = 10;
+        self.trans[4723] = 10;
+        self.trans[4724] = 10;
+        self.trans[4725] = 10;
+        self.trans[4726] = 10;
+        self.trans[4727] = 10;
+        self.trans[4728] = 10;
+        self.trans[4729] = 10;
+        self.trans[4730] = 10;
+        self.trans[4912] = 10;
+        self.trans[4913] = 10;
+        self.trans[4914] = 10;
+        self.trans[4915] = 10;
+        self.trans[4916] = 10;
+        self.trans[4917] = 10;
+        self.trans[4918] = 10;
+        self.trans[4919] = 10;
+        self.trans[4920] = 10;
+        self.trans[4921] = 10;
+        self.trans[4929] = 10;
+        self.trans[4930] = 10;
+        self.trans[4931] = 10;
+        self.trans[4932] = 10;
+        self.trans[4933] = 10;
+        self.trans[4934] = 10;
+        self.trans[4935] = 10;
+        self.trans[4936] = 10;
+        self.trans[4937] = 10;
+        self.trans[4938] = 10;
+        self.trans[4939] = 10;
+        self.trans[4940] = 10;
+        self.trans[4941] = 10;
+        self.trans[4942] = 10;
+        self.trans[4943] = 10;
+        self.trans[4944] = 10;
+        self.trans[4945] = 10;
+        self.trans[4946] = 10;
+        self.trans[4947] = 10;
+        self.trans[4948] = 10;
+        self.trans[4949] = 10;
+        self.trans[4950] = 10;
+        self.trans[4951] = 10;
+        self.trans[4952] = 10;
+        self.trans[4953] = 10;
+        self.trans[4954] = 10;
+        self.trans[4959] = 10;
+        self.trans[4961] = 10;
+        self.trans[4962] = 10;
+        self.trans[4963] = 10;
+        self.trans[4964] = 10;
+        self.trans[4965] = 10;
+        self.trans[4966] = 10;
+        self.trans[4967] = 10;
+        self.trans[4968] = 10;
+        self.trans[4969] = 10;
+        self.trans[4970] = 10;
+        self.trans[4971] = 10;
+        self.trans[4972] = 10;
+        self.trans[4973] = 10;
+        self.trans[4974] = 10;
+        self.trans[4975] = 10;
+        self.trans[4976] = 10;
+        self.trans[4977] = 10;
+        self.trans[4978] = 10;
+        self.trans[4979] = 10;
+        self.trans[4980] = 10;
+        self.trans[4981] = 10;
+        self.trans[4982] = 10;
+        self.trans[4983] = 10;
+        self.trans[4984] = 10;
+        self.trans[4985] = 10;
+        self.trans[4986] = 10;
+        self.trans[5168] = 10;
+        self.trans[5169] = 10;
+        self.trans[5170] = 10;
+        self.trans[5171] = 10;
+        self.trans[5172] = 10;
+        self.trans[5173] = 10;
+        self.trans[5174] = 10;
+        self.trans[5175] = 10;
+        self.trans[5176] = 10;
+        self.trans[5177] = 10;
+        self.trans[5185] = 10;
+        self.trans[5186] = 10;
+        self.trans[5187] = 10;
+        self.trans[5188] = 10;
+        self.trans[5189] = 10;
+        self.trans[5190] = 10;
+        self.trans[5191] = 10;
+        self.trans[5192] = 10;
+        self.trans[5193] = 10;
+        self.trans[5194] = 10;
+        self.trans[5195] = 10;
+        self.trans[5196] = 10;
+        self.trans[5197] = 10;
+        self.trans[5198] = 10;
+        self.trans[5199] = 10;
+        self.trans[5200] = 10;
+        self.trans[5201] = 10;
+        self.trans[5202] = 10;
+        self.trans[5203] = 10;
+        self.trans[5204] = 10;
+        self.trans[5205] = 10;
+        self.trans[5206] = 10;
+        self.trans[5207] = 10;
+        self.trans[5208] = 10;
+        self.trans[5209] = 10;
+        self.trans[5210] = 10;
+        self.trans[5215] = 10;
+        self.trans[5217] = 10;
+        self.trans[5218] = 10;
+        self.trans[5219] = 10;
+        self.trans[5220] = 10;
+        self.trans[5221] = 21;
+        self.trans[5222] = 10;
+        self.trans[5223] = 10;
+        self.trans[5224] = 10;
+        self.trans[5225] = 10;
+        self.trans[5226] = 10;
+        self.trans[5227] = 10;
+        self.trans[5228] = 10;
+        self.trans[5229] = 10;
+        self.trans[5230] = 10;
+        self.trans[5231] = 10;
+        self.trans[5232] = 10;
+        self.trans[5233] = 10;
+        self.trans[5234] = 10;
+        self.trans[5235] = 10;
+        self.trans[5236] = 10;
+        self.trans[5237] = 10;
+        self.trans[5238] = 10;
+        self.trans[5239] = 10;
+        self.trans[5240] = 10;
+        self.trans[5241] = 10;
+        self.trans[5242] = 10;
+        self.trans[5424] = 10;
+        self.trans[5425] = 10;
+        self.trans[5426] = 10;
+        self.trans[5427] = 10;
+        self.trans[5428] = 10;
+        self.trans[5429] = 10;
+        self.trans[5430] = 10;
+        self.trans[5431] = 10;
+        self.trans[5432] = 10;
+        self.trans[5433] = 10;
+        self.trans[5441] = 10;
+        self.trans[5442] = 10;
+        self.trans[5443] = 10;
+        self.trans[5444] = 10;
+        self.trans[5445] = 10;
+        self.trans[5446] = 10;
+        self.trans[5447] = 10;
+        self.trans[5448] = 10;
+        self.trans[5449] = 10;
+        self.trans[5450] = 10;
+        self.trans[5451] = 10;
+        self.trans[5452] = 10;
+        self.trans[5453] = 10;
+        self.trans[5454] = 10;
+        self.trans[5455] = 10;
+        self.trans[5456] = 10;
+        self.trans[5457] = 10;
+        self.trans[5458] = 10;
+        self.trans[5459] = 10;
+        self.trans[5460] = 10;
+        self.trans[5461] = 10;
+        self.trans[5462] = 10;
+        self.trans[5463] = 10;
+        self.trans[5464] = 10;
+        self.trans[5465] = 10;
+        self.trans[5466] = 10;
+        self.trans[5471] = 10;
+        self.trans[5473] = 10;
+        self.trans[5474] = 10;
+        self.trans[5475] = 10;
+        self.trans[5476] = 10;
+        self.trans[5477] = 10;
+        self.trans[5478] = 10;
+        self.trans[5479] = 10;
+        self.trans[5480] = 10;
+        self.trans[5481] = 10;
+        self.trans[5482] = 10;
+        self.trans[5483] = 10;
+        self.trans[5484] = 10;
+        self.trans[5485] = 10;
+        self.trans[5486] = 10;
+        self.trans[5487] = 10;
+        self.trans[5488] = 10;
+        self.trans[5489] = 10;
+        self.trans[5490] = 10;
+        self.trans[5491] = 10;
+        self.trans[5492] = 10;
+        self.trans[5493] = 10;
+        self.trans[5494] = 10;
+        self.trans[5495] = 10;
+        self.trans[5496] = 10;
+        self.trans[5497] = 10;
+        self.trans[5498] = 10;
+        self.is_final[0] = -1;
+        self.is_final[1] = 12;
+        self.is_final[2] = 0;
+        self.is_final[3] = 8;
+        self.is_final[4] = 6;
+        self.is_final[5] = 7;
+        self.is_final[6] = 9;
+        self.is_final[7] = 4;
+        self.is_final[8] = 11;
+        self.is_final[9] = 10;
+        self.is_final[10] = 5;
+        self.is_final[11] = 5;
+        self.is_final[12] = 5;
+        self.is_final[13] = 5;
+        self.is_final[14] = 5;
+        self.is_final[15] = 1;
+        self.is_final[16] = 5;
+        self.is_final[17] = 5;
+        self.is_final[18] = 5;
+        self.is_final[19] = 2;
+        self.is_final[20] = 5;
+        self.is_final[21] = 3;
+    }
+
+    int at_end() { return self.pos >= self.len; }
+
+    int step(int state, char c) {
+        int b = cast<int>(c);
+        if (b < 0) { return -1; }
+        return self.trans[state * 256 + b];
+    }
+
+    /* API JFlex -- champs/methodes exposes a l'utilisateur */
+    str yytext() { return &self.yytext_buf; }
+    int yylength() { return self.yyleng_val; }
+    int yychar() { return self.yychar_val; }
+    int yystate() { return self.lex_state; }
+    void yybegin(int s) { self.lex_state = s; }
+    void yypushback(int n) {
+        self.pos = self.pos - n;
+        if (self.pos < 0) { self.pos = 0; }
+    }
+    void yyreset(char* new_source) {
+        self.init(new_source);
+    }
+
+    /* Avance yyline/yycolumn de n caracteres a partir de self.pos. */
+    void advance_line_col(int n) {
+        int i = 0;
+        while (i < n) {
+            char c = self.src[self.pos + i];
+            if (c == cast<char>(10)) { self.yyline = self.yyline + 1; self.yycolumn = 0; }
+            else { self.yycolumn = self.yycolumn + 1; }
+            i = i + 1;
+        }
+    }
+
+    /* Une passe de maximal munch ; remplit yytext_buf/yyleng_val.
+       Retourne l'id de regle gagnante, ou -1 si aucune regle
+       n'accepte (erreur lexicale -- 1 caractere consomme). */
+    int scan_one() {
+        self.yychar_val = self.pos;
+        int state = 0;
+        int best_rule = -1;
+        int best_i = 0;
+        int i = 0;
+        while (self.pos + i < self.len) {
+            char c = self.src[self.pos + i];
+            int nstate = self.step(state, c);
+            if (nstate == -1) { break; }
+            state = nstate;
+            i = i + 1;
+            if (self.is_final[state] != -1) { best_rule = self.is_final[state]; best_i = i; }
+        }
+        if (best_rule == -1) {
+            self.yyleng_val = 1;
+            self.yytext_buf[0] = self.src[self.pos];
+            self.yytext_buf[1] = cast<char>(0);
+            self.advance_line_col(1);
+            self.pos = self.pos + 1;
+            return -1;
+        }
+        self.yyleng_val = best_i;
+        int k = 0;
+        while (k < best_i && k < 255) { self.yytext_buf[k] = self.src[self.pos + k]; k = k + 1; }
+        self.yytext_buf[k] = cast<char>(0);
+        self.advance_line_col(best_i);
+        self.pos = self.pos + best_i;
+        return best_rule;
+    }
+
+    /* ---- prologue utilisateur (%{ ... %}), methodes ---- */
+/* ---------------------------------------------------------------
+ * Methodes utilitaires : construisent un Symbol (type + position
+ * + valeur semantique optionnelle), a la maniere de symbol()/
+ * symbolObject() dans un lexer JFlex classique. Injectees comme
+ * methodes du scanner genere -- yyline/yycolumn/yytext() sont donc
+ * directement accessibles ici (matlex les reecrit en self.xxx).
+ *
+ * Les entiers de type de token (0, 1, 2, ...) sont pour l'instant
+ * des constantes brutes : dans un pipeline complet, elles viendraient
+ * du module "sym" genere par matyacc (comme sym.IF, sym.PLUS, ... en
+ * JFlex/CUP) -- matlex ne connait pas ces noms, seulement matyacc.
+ * --------------------------------------------------------------- */
+Symbol symbol(int t) {
+    Symbol s;
+    s.sym_type = t;
+    s.line = self.yyline;
+    s.column = self.yycolumn;
+    s.ivalue = 0;
+    return s;
+}
+
+Symbol symbolInt(int t, int v) {
+    Symbol s;
+    s.sym_type = t;
+    s.line = self.yyline;
+    s.column = self.yycolumn;
+    s.ivalue = v;
+    return s;
+}
+
+Symbol symbolStr(int t, str v) {
+    Symbol s;
+    s.sym_type = t;
+    s.line = self.yyline;
+    s.column = self.yycolumn;
+    s.svalue = v;
+    return s;
+}
+
+    /* yylex() : boucle de scan style flex/JFlex.
+       Symbol.sym_type == -1 signale la fin d'entree. */
+    Symbol yylex() {
+        int cont = 1;
+        Symbol result;
+        result.sym_type = -1;
+        result.line = self.yyline;
+        result.column = self.yycolumn;
+        result.ivalue = 0;
+        while (cont == 1) {
+            if (self.at_end()) {
+                cont = 0;
+            } else {
+                int rid = self.scan_one();
+                if (rid == -1) {
+                    int lex_err = 1;
+                } else if (rid == 0) { int skip = 0; }
+                else if (rid == 1) { return self.symbol(10); }
+                else if (rid == 2) { return self.symbol(11); }
+                else if (rid == 3) { return self.symbol(12); }
+                else if (rid == 4) { return self.symbolInt(1, atoi(self.yytext().data())); }
+                else if (rid == 5) { return self.symbolStr(0, self.yytext()); }
+                else if (rid == 6) { return self.symbol(20); }
+                else if (rid == 7) { return self.symbol(21); }
+                else if (rid == 8) { return self.symbol(22); }
+                else if (rid == 9) { return self.symbol(23); }
+                else if (rid == 10) { return self.symbol(24); }
+                else if (rid == 11) { return self.symbol(25); }
+                else if (rid == 12) {
+                 printf("Caractere inconnu : '%s' ligne %d colonne %d\n",
+                        self.yytext().data(), self.yyline + 1, self.yycolumn + 1);
+             }
+            }
+        }
+        return result;
+    }
+}
+
+/* ---- code utilisateur final (apres le 2e %%), typiquement main() ---- */
+
+
+/* ---------------------------------------------------------------
+ * Programme de demonstration : tokenise l'entree (fichier en
+ * argv[1], sinon stdin -- sentinelle "EOF" sur sa propre ligne, ou
+ * fin de flux normale) et affiche chaque Symbol produit.
+ * --------------------------------------------------------------- */
+int read_whole_file(char* path, char* buf, int cap) {
+    char* mode = "r";
+    char* f = fopen(path, mode);
+    if (f == null) { return -1; }
+    int off = 0;
+    char* got = fgets(buf + off, cap - off, f);
+    while (got != null) {
+        off = off + cast<int>(strlen(buf + off));
+        if (cap - off < 2) { got = null; } else { got = fgets(buf + off, cap - off, f); }
+    }
+    fclose(f);
+    buf[off] = cast<char>(0);
+    return off;
+}
+
+int main(int argc, char** argv) {
+    char[65536] buf;
+    int off = 0;
+
+    if (argc > 1) {
+        int n = read_whole_file(argv[1], &buf, 65536);
+        if (n < 0) {
+            printf("Erreur : impossible de lire '%s'\n", argv[1]);
+            return 1;
+        }
+    } else {
+        int done = 0;
+        while (done == 0) {
+            char[1024] line;
+            int lp = 0;
+            int c = getchar();
+            while (c != -1 && cast<char>(c) != cast<char>(10) && lp < 1023) {
+                line[lp] = cast<char>(c);
+                lp = lp + 1;
+                c = getchar();
+            }
+            line[lp] = cast<char>(0);
+            if (c == -1 && lp == 0) {
+                done = 1;
+            } else if (lp == 3 && line[0] == 'E' && line[1] == 'O' && line[2] == 'F') {
+                done = 1;
+            } else {
+                int i = 0;
+                while (i < lp && off < 65535) { buf[off] = line[i]; off = off + 1; i = i + 1; }
+                if (off < 65535) { buf[off] = cast<char>(10); off = off + 1; }
+                if (c == -1) { done = 1; }
+            }
+        }
+        buf[off] = cast<char>(0);
+    }
+
+    GenScanner sc;
+    sc.init(&buf);
+
+    printf("=== MiniCalc3 : tokenisation avec Symbol ===\n\n");
+
+    Symbol tok = sc.yylex();
+    while (tok.sym_type != -1) {
+        if (tok.sym_type == 0) {
+            printf("  IDENT   svalue='%s'  ligne %d colonne %d\n", tok.svalue.data(), tok.line, tok.column);
+        } else if (tok.sym_type == 1) {
+            printf("  ENTIER  ivalue=%d    ligne %d colonne %d\n", tok.ivalue, tok.line, tok.column);
+        } else {
+            printf("  SYMBOLE type=%-2d              ligne %d colonne %d\n", tok.sym_type, tok.line, tok.column);
+        }
+        tok = sc.yylex();
+    }
+
+    printf("\n=== fin ===\n");
+    return 0;
+}
+

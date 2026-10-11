@@ -1,0 +1,87 @@
+[project]
+name        = "webframework"
+version     = "1.0.0"
+description = "Framework web MVC MATL-ABC : routes declaratives, threads, SQLite, FileWrapper"
+entry       = "main.mabc"
+
+[types]
+[dependencies]
+
+[backend]
+blas   = false
+lapack = false
+fft    = false
+llvm   = true
+
+[build]
+optimize     = true
+output       = "./webframework_out"
+strict_types = true
+
+# ─────────────────────────────────────────────
+# Hooks de build : le "CMake au format MATL-ABC".
+# Executes dans l'ordre de declaration, dans le dossier du conf.toml.
+#   phase = "pre"  -> avant la compilation (les .so produits ici
+#                     doivent exister pour l'edition de liens)
+#   phase = "post" -> apres le binaire (tests, packaging, lancement)
+# Les [[hooks]] ne tournent QUE si [hooks] enabled = true (opt-in).
+# ─────────────────────────────────────────────
+
+[hooks]
+enabled = true
+
+# ─────────────────────────────────────────────
+# DevOps : conteneurisation et deploiement.
+# "matlabc deploy --conf conf.toml" genere Dockerfile, manifests k8s,
+# et pipeline CI selon ce qui est active ici. Voir
+# matlabc_doc/42_devops_deploy.md.
+# ─────────────────────────────────────────────
+
+[deploy.docker]
+enabled      = true
+base_image   = "debian:stable-slim"
+expose_port  = 8080
+runtime_deps = ["libsqlite3-0"]
+
+[deploy.kubernetes]
+enabled      = true
+replicas     = 2
+namespace    = "recurstream"
+service_type = "LoadBalancer"
+
+[deploy.ci]
+enabled  = true
+provider = "github"
+
+[deploy.git]
+branch = "main"
+
+[[hooks]]
+name  = "compiler le shim web (threads + sqlite3)"
+phase = "pre"
+require = "webshim.c"
+run   = "gcc -shared -fPIC webshim.c -o libwebshim.so -l:libsqlite3.so.0 -lpthread"
+
+[[hooks]]
+name  = "rendre le posixshim (FileWrapper) disponible localement"
+phase = "pre"
+require = "../file_wrapper/libposixshim.so"
+run   = "cp ../file_wrapper/libposixshim.so ./libposixshim.so"
+
+[[hooks]]
+name  = "verifier que le binaire s'est bien construit"
+phase = "post"
+require = "./webframework_out"
+run   = "test -x ./webframework_out && echo 'binaire pret : ./webframework_out'"
+
+[lib.extrafile]
+file    = "/usr/lib/x86_64-linux-gnu/libc.so.6"
+headers = "headers/extra_file.mabh"
+
+[lib.posixshim]
+file    = "./libposixshim.so"
+headers = "headers/posixshim.mabh"
+
+[lib.webshim]
+file    = "./libwebshim.so"
+headers = "headers/webshim.mabh"

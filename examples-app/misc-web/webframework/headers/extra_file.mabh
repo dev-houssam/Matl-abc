@@ -1,0 +1,19 @@
+/* extra_file.mabh — complements aux signatures deja fournies par
+ * <cstd>/<csys> (read/write/close/fcntl/fstat/fsync/fdatasync sont
+ * accessibles nativement -- open/lseek/dup/dup2/ftruncate/lockf NE
+ * LE SONT PAS malgre leur presence textuelle dans mabh.ml : bug de
+ * resolution non elucide, voir matlabc_doc/34 -- contournes ici via
+ * un shim C separe, posix_shim.c, expose sous des noms prefixes
+ * "matlabc_" pour eviter toute ambiguite).
+ */
+
+int   fgetc(char* stream);
+int   fread(char* ptr, int size, int nmemb, char* stream);
+int   fwrite(char* ptr, int size, int nmemb, char* stream);
+int   fseek(char* stream, int offset, int origin);
+int   ftell(char* stream);
+void  rewind(char* stream);
+int   ferror(char* stream);
+void  clearerr(char* stream);
+int   fileno(char* stream);
+char* fdopen(int fd, char* mode);

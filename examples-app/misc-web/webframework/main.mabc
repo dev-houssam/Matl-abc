@@ -1,0 +1,461 @@
+/* ===========================================================
+ * webframework — framework web MVC en MATL-ABC
+ * ===========================================================
+ * Assemblage des chantiers 1-3 (funcptr, variadiques, Vec<T>)
+ * plus les briques validees : sockets, threads (shim), SQLite3
+ * (shim), FileWrapper (matlabc_doc/34), match par type, throw.
+ *
+ *   MODEL      : MessageModel (table SQLite "messages")
+ *   VIEW       : fichiers HTML dans views/, lus par TextFile
+ *   CONTROLLER : handlers = LAMBDAS funcptr<(str)str>
+ *
+ * Arbre de routes declaratif (la vision d'origine) :
+ *   new NodeGroup("/",
+ *       new GET(route("/"), (str q) => { ... }),
+ *       new NodeGroup("/api", new GET(...), new POST(...)))
+ *
+ * Dispatch : un pthread DETACHE par connexion (webshim).
+ * Voir matlabc_doc/40_webframework.md.
+ * =========================================================== */
+
+import <cstd>
+import <csys>
+import <extrafile>
+import <posixshim>
+import <webshim>
+
+/* ===========================================================
+ * Vec<T> — bibliotheque (chantier 3)
+ * =========================================================== */
+struct Vec<T> {
+    T* data;
+    int length;
+    int capacity;
+
+    void init() {
+        self.length = 0;
+        self.capacity = 4;
+        self.data = cast<T*>(malloc(cast<usize>(self.capacity * sizeof<T>())));
+    }
+
+    void push(T v) {
+        if (self.length == self.capacity) {
+            int newcap = self.capacity * 2;
+            T* nd = cast<T*>(malloc(cast<usize>(newcap * sizeof<T>())));
+            for i in range(self.length) { nd[i] = self.data[i]; }
+            free(cast<rawptr>(self.data));
+            self.data = nd;
+            self.capacity = newcap;
+        }
+        self.data[self.length] = v;
+        self.length = self.length + 1;
+    }
+
+    T get(int i) { return self.data[i]; }
+    int len() { return self.length; }
+}
+
+/* ===========================================================
+ * Exceptions (pattern file_wrapper)
+ * =========================================================== */
+header Exception {
+    str message();
+}
+
+struct ServerError implements Exception {
+    str reason;
+    void init(str reason) { self.reason = reason; }
+    str message() { return self.reason; }
+}
+
+/* ===========================================================
+ * FileWrapper (matlabc_doc/34) — lecture des vues HTML
+ * =========================================================== */
+struct TextFile implements Exception {
+    rawptr handle;
+    bool is_open;
+
+    void init(str path, str mode) {
+        self.handle = cast<rawptr>(0);
+        self.is_open = false;
+        self.open(path, mode);
+    }
+
+    str message() { return "erreur TextFile"; }
+
+    void open(str path, str mode) {
+        char* h = fopen(cstr_of(path), cstr_of(mode));
+        if (h == null) {
+            throw new ServerError("vue introuvable : " + path);
+        }
+        self.handle = cast<rawptr>(h);
+        self.is_open = true;
+    }
+
+    str read_line() {
+        rawptr buf = malloc(cast<usize>(4096));
+        char* h = self.handle.as<char*>();
+        char* r = fgets(buf.as<char*>(), 4095, h);
+        if (r == null) { free(buf); return ""; }
+        str result = str_from(buf.as<char*>());
+        free(buf);
+        return result;
+    }
+
+    bool eof() {
+        char* h = self.handle.as<char*>();
+        return feof(h) != 0;
+    }
+
+    void close() {
+        if (!self.is_open) { return; }
+        char* h = self.handle.as<char*>();
+        int r = fclose(h);
+        self.is_open = false;
+        if (r != 0) { throw new ServerError("erreur fermeture vue"); }
+    }
+}
+
+/* Lit un fichier de vue ENTIER en un str (le V de MVC). */
+str render_view(str path) {
+    TextFile* f = new TextFile(path, "r");
+    str content = "";
+    while (!f.eof()) {
+        str line = f.read_line();
+        content = content + line;
+    }
+    f.close();
+    return content;
+}
+
+/* ===========================================================
+ * MODEL — MessageModel, adosse a SQLite3 (via webshim)
+ * =========================================================== */
+struct MessageModel {
+    rawptr db;
+
+    void init(str path) {
+        self.db = matlabc_db_open(cstr_of(path));
+        if (self.db == cast<rawptr>(0)) {
+            throw new ServerError("impossible d'ouvrir la base : " + path);
+        }
+        int r = matlabc_db_exec(self.db,
+            cstr_of("CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, author TEXT, content TEXT)"));
+        if (r != 0) {
+            throw new ServerError("creation de la table messages impossible");
+        }
+    }
+
+    void add(str author, str content) {
+        str sql = "INSERT INTO messages(author, content) VALUES('"
+                + author + "', '" + content + "')";
+        int r = matlabc_db_exec(self.db, cstr_of(sql));
+        if (r != 0) {
+            throw new ServerError("insertion impossible");
+        }
+    }
+
+    int count() {
+        rawptr res = matlabc_db_query(self.db, cstr_of("SELECT COUNT(*) FROM messages"));
+        if (res == cast<rawptr>(0)) { return 0; }
+        str n = str_from(matlabc_db_result_cell(res, 0, 0));
+        matlabc_db_result_free(res);
+        return n.to_int();
+    }
+
+    /* Rend les messages en lignes HTML <li> -- le Model fournit les
+       donnees, le Controller les inserera dans la View. */
+    str all_as_html() {
+        rawptr res = matlabc_db_query(self.db,
+            cstr_of("SELECT author, content FROM messages ORDER BY id"));
+        if (res == cast<rawptr>(0)) { return ""; }
+        int n = matlabc_db_result_rows(res);
+        str html = "";
+        for i in range(n) {
+            str author  = str_from(matlabc_db_result_cell(res, i, 0));
+            str content = str_from(matlabc_db_result_cell(res, i, 1));
+            html = html + "<li><b>" + author + "</b> : " + content + "</li>\n";
+        }
+        matlabc_db_result_free(res);
+        return html;
+    }
+}
+
+/* ===========================================================
+ * ROUTES — l'arbre declaratif de la vision
+ * =========================================================== */
+header WebNode {
+    str kind();
+}
+
+str route(str p) { return p; }
+
+struct GET implements WebNode {
+    str path;
+    funcptr<(str)str> handle;
+    void init(str path, funcptr<(str)str> handle) {
+        self.path = path;
+        self.handle = handle;
+    }
+    str kind() { return "GET"; }
+}
+
+struct POST implements WebNode {
+    str path;
+    funcptr<(str)str> handle;
+    void init(str path, funcptr<(str)str> handle) {
+        self.path = path;
+        self.handle = handle;
+    }
+    str kind() { return "POST"; }
+}
+
+/* Route aplatie : methode + chemin complet + handler */
+struct Route {
+    str method;
+    str full_path;
+    funcptr<(str)str> handle;
+    void init(str method, str full_path, funcptr<(str)str> handle) {
+        self.method = method;
+        self.full_path = full_path;
+        self.handle = handle;
+    }
+}
+
+/* Groupe de routes : prefixe + enfants variadiques (GET/POST/
+   sous-groupes) -- l'APLATISSEMENT RECURSIF de la vision : les
+   Group sont parcourus, les Node collectes avec prefixe cumule. */
+struct NodeGroup implements WebNode {
+    str prefix;
+    Vec<WebNode*>* children;
+
+    void init(str prefix, ...WebNode* elements) {
+        self.prefix = prefix;
+        self.children = new Vec<WebNode*>();
+        for e in elements {
+            self.children.push(e);
+        }
+    }
+
+    str kind() { return "GROUP"; }
+
+    /* Parcours recursif : collecte toutes les feuilles dans "out",
+       en concatenant les prefixes des groupes traverses. */
+    void collect(str base, Vec<Route*>* out) {
+        str full = base + self.prefix;
+        for i in range(self.children.len()) {
+            WebNode* child = self.children.get(i);
+            match (child) {
+                NodeGroup => {
+                    NodeGroup* grp = cast<NodeGroup*>(child);
+                    grp.collect(full, out);
+                }
+                GET => {
+                    GET* g = cast<GET*>(child);
+                    out.push(new Route("GET", full + g.path, g.handle));
+                }
+                POST => {
+                    POST* p = cast<POST*>(child);
+                    out.push(new Route("POST", full + p.path, p.handle));
+                }
+                _ => { }
+            }
+        }
+    }
+}
+
+/* ===========================================================
+ * HTTP — parsing minimal de la ligne de requete
+ * =========================================================== */
+
+/* Trouve l'index du premier espace a partir de "start" (-1 si absent) */
+int find_space(str s, int start) {
+    for i in range(start, s.len()) {
+        if (s.slice(i, i + 1) == " ") { return i; }
+    }
+    return -1;
+}
+
+/* "GET /users HTTP/1.1\r\n..." -> methode ("GET") */
+str parse_method(str req) {
+    int sp = find_space(req, 0);
+    if (sp < 0) { return ""; }
+    return req.slice(0, sp);
+}
+
+/* "GET /users HTTP/1.1\r\n..." -> chemin ("/users") */
+str parse_path(str req) {
+    int sp1 = find_space(req, 0);
+    if (sp1 < 0) { return "/"; }
+    int sp2 = find_space(req, sp1 + 1);
+    if (sp2 < 0) { return "/"; }
+    return req.slice(sp1 + 1, sp2);
+}
+
+/* ===========================================================
+ * SERVER — sockets + un pthread detache par connexion
+ * =========================================================== */
+
+/* Etat global du serveur (accessible depuis les handlers-lambdas et
+   le worker de thread, qui sont des fonctions top-level pures). */
+Vec<Route*>* g_routes;
+MessageModel* g_model;
+
+/* Construit la reponse HTTP complete pour une requete brute. */
+str dispatch(str request) {
+    str method = parse_method(request);
+    str path   = parse_path(request);
+    printf("  [dispatch] %s %s\n", method.data(), path.data());
+
+    for i in range(g_routes.len()) {
+        Route* r = g_routes.get(i);
+        if (r.method == method && r.full_path == path) {
+            str body = r.handle(path);   /* <- appel du handler (lambda) */
+            return "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n" + body;
+        }
+    }
+    return "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<h1>404</h1>";
+}
+
+/* Worker execute dans un THREAD DETACHE par connexion (webshim). */
+void client_worker(int client_fd) {
+    rawptr buf = malloc(cast<usize>(8192));
+    int n = recv(client_fd, buf.as<char*>(), 8191, 0);
+    if (n > 0) {
+        memview<char> bytes = buf.view<char>();
+        bytes[n] = cast<char>(0);
+        str request = str_from(buf.as<char*>());
+        str response = dispatch(request);
+        send(client_fd, cstr_of(response), response.len(), 0);
+    }
+    free(buf);
+    close(client_fd);
+}
+
+struct Server implements Exception {
+    int fd;
+    int max_requests;   /* pour la demo : s'arrete apres N requetes */
+
+    void init(NodeGroup* root) {
+        self.fd = -1;
+        self.max_requests = -1;
+        g_routes = new Vec<Route*>();
+        root.collect("", g_routes);
+        printf("[serveur] %d route(s) enregistree(s) :\n", g_routes.len());
+        for i in range(g_routes.len()) {
+            Route* r = g_routes.get(i);
+            printf("  %s %s\n", r.method.data(), r.full_path.data());
+        }
+    }
+
+    str message() { return "erreur serveur"; }
+
+    /* start() LEVE une exception si l'adresse est deja prise --
+       jamais de code de retour a verifier soi-meme (la regle du
+       projet depuis file_wrapper). */
+    void start(str ip, int port) {
+        self.fd = socket(2, 1, 0);          /* AF_INET, SOCK_STREAM */
+        if (self.fd < 0) { throw new ServerError("socket() a echoue"); }
+
+        /* SO_REUSEADDR pour relancer sans attendre TIME_WAIT */
+        rawptr optval = malloc(cast<usize>(4));
+        memview<int> ov = optval.view<int>();
+        ov[0] = 1;
+        setsockopt(self.fd, 1, 2, optval.as<char*>(), 4);  /* SOL_SOCKET, SO_REUSEADDR */
+        free(optval);
+
+        /* sockaddr_in construit octet par octet (16 octets) :
+           famille AF_INET(2) LE, port big-endian, INADDR_ANY */
+        rawptr addr = malloc(cast<usize>(16));
+        memview<char> a = addr.view<char>();
+        for i in range(16) { a[i] = cast<char>(0); }
+        a[0] = cast<char>(2);                       /* AF_INET, little-endian */
+        a[2] = cast<char>((port / 256) % 256);      /* port, octet haut */
+        a[3] = cast<char>(port % 256);              /* port, octet bas  */
+
+        int r = bind(self.fd, addr.as<char*>(), 16);
+        free(addr);
+        if (r != 0) {
+            close(self.fd);
+            throw new ServerError("adresse deja utilisee : " + ip + ":" + str_of(port));
+        }
+        if (listen(self.fd, 16) != 0) {
+            throw new ServerError("listen() a echoue");
+        }
+        printf("[serveur] en ecoute sur %s:%d\n", ip.data(), port);
+
+        /* Boucle d'acceptation : chaque client part dans son thread. */
+        funcptr<(int)void> worker = client_worker;
+        int served = 0;
+        while (self.max_requests < 0 || served < self.max_requests) {
+            int client = accept(self.fd, cast<char*>(null), cast<char*>(null));
+            if (client < 0) { continue; }
+            matlabc_thread_spawn(cast<rawptr>(worker), client);
+            served = served + 1;
+        }
+        printf("[serveur] arret apres %d requete(s) (mode demo)\n", served);
+        close(self.fd);
+    }
+}
+
+/* ===========================================================
+ * MAIN — assemblage MVC : les CONTROLLERS sont des LAMBDAS
+ * =========================================================== */
+int main() {
+    printf("=== framework web MATL-ABC (MVC) ===\n");
+
+    /* ---- MODEL : base SQLite, semee pour la demo ---- */
+    g_model = new MessageModel("/tmp/webframework.db");
+    if (g_model.count() == 0) {
+        g_model.add("Alice", "premier message depuis MATL-ABC");
+        g_model.add("Bob", "SQLite fonctionne !");
+        g_model.add("Failane", "routes + threads + funcptr");
+    }
+    printf("[model] %d message(s) en base\n", g_model.count());
+
+    /* ---- ROUTES : l'arbre declaratif de la vision, avec des
+       LAMBDAS comme handlers (les CONTROLLERS du MVC) ---- */
+    NodeGroup* nodes = new NodeGroup("",
+        new GET(route("/"), (str q) => {
+            return render_view("views/home.html");
+        }),
+
+        new NodeGroup("/api",
+            new NodeGroup("/v1",
+                new GET(route("/messages"), (str q) => {
+                    /* Controller : View (fichiers) + Model (SQLite) */
+                    str page = render_view("views/messages_header.html");
+                    page = page + g_model.all_as_html();
+                    page = page + render_view("views/messages_footer.html");
+                    return page;
+                }),
+                new GET(route("/sante"), (str q) => {
+                    return "<h1>OK</h1><p>" + str_of(g_model.count()) + " message(s) en base</p>";
+                }),
+                new POST(route("/messages/ajouter"), (str q) => {
+                    g_model.add("visiteur", "ajout via POST " + q);
+                    return "<h1>ajoute</h1>";
+                })
+            )
+        ),
+
+        new NodeGroup("/app",
+            new GET(route("/apropos"), (str q) => {
+                return render_view("views/apropos.html");
+            })
+        )
+    );
+
+    /* ---- SERVER : start() leve si l'adresse est prise ---- */
+    Server* server = new Server(nodes);
+    server.max_requests = 6;   /* mode demo : 6 requetes puis arret propre */
+    try {
+        server.start("0.0.0.0", 8080);
+    } catch (ServerError e) {
+        printf("[erreur] %s\n", e.message().data());
+        return 1;
+    }
+
+    printf("[OK] serveur arrete proprement.\n");
+    return 0;
+}

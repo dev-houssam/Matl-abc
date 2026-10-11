@@ -1,0 +1,16 @@
+/* webshim.mabh — interface du pont C (webshim.c) :
+ * threads detaches pour le dispatch + SQLite3 via sqlite3_get_table.
+ */
+
+/* -- threads : lance fn(arg) dans un pthread detache (0 = OK) -- */
+int matlabc_thread_spawn(rawptr fn, int arg);
+
+/* -- sqlite3 -- */
+rawptr matlabc_db_open(char* path);
+int    matlabc_db_close(rawptr db);
+int    matlabc_db_exec(rawptr db, char* sql);
+rawptr matlabc_db_query(rawptr db, char* sql);
+int    matlabc_db_result_rows(rawptr res);
+int    matlabc_db_result_cols(rawptr res);
+char*  matlabc_db_result_cell(rawptr res, int row, int col);
+void   matlabc_db_result_free(rawptr res);

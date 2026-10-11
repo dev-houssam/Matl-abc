@@ -1,0 +1,31 @@
+# ================================================================
+# Sous-projet : storage — persistance du catalogue
+# ================================================================
+# DEPEND de catalog : il serialise des Medicine et remplit une Pharmacy.
+# Utilise le wrapper `file` de la bibliotheque standard MATL-ABC
+# (enums OpenMode/Permission), preuve que les wrappers et les
+# sous-projets se composent naturellement.
+# ================================================================
+
+[project]
+name        = "storage"
+version     = "1.0.0"
+description = "Lecture et ecriture du catalogue sur disque (format texte a champs)"
+entry       = "storage.mabc"
+depends     = ["catalog"]
+exports     = ["storage.mabc"]
+
+# storage compile contre les types de catalog (qui tire search)
+# et contre le wrapper file de la stdlib
+[sources]
+files = ["../search/search.mabc", "../catalog/catalog.mabc", "vendor/file.mabc"]
+
+[imports]
+libs = ["std", "unistd", "fcntl", "stat", "catalog", "search", "file"]
+
+[backend]
+llvm = true
+
+[build]
+type   = "static"
+# output non declare : va dans build/

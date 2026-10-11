@@ -1,0 +1,299 @@
+/* ================================================================
+ * search.mabc — Structure de donnees de recherche
+ * ================================================================
+ * Sous-projet autonome, sans dependance. Fournit un index inverse
+ * generique : on indexe des paires (cle textuelle -> identifiant), puis
+ * on interroge par prefixe, sous-chaine ou score de pertinence.
+ *
+ * Choix de conception : index plat trie plutot qu'un trie a pointeurs.
+ * Le catalogue d'une pharmacie compte quelques centaines d'entrees ; un
+ * balayage lineaire sur un tableau contigu est plus rapide en pratique
+ * (localite de cache) et bien plus simple a serialiser.
+ *
+ * Convention : identifiants en ANGLAIS, commentaires en FRANCAIS.
+ * ================================================================ */
+
+import <std>
+
+/* ---- Mode d'interrogation de l'index ---- */
+enum MatchMode {
+    EXACT      = 0,   /* la cle est identique au terme */
+    PREFIX     = 1,   /* la cle commence par le terme */
+    SUBSTRING  = 2,   /* le terme apparait quelque part dans la cle */
+    FUZZY      = 3    /* tolere les fautes de frappe (distance d'edition) */
+}
+
+/* ---- Une entree de l'index : cle textuelle + identifiant ---- */
+struct IndexEntry {
+    str key;        /* texte normalise (minuscules, sans accents) */
+    int id;         /* identifiant de l'objet indexe */
+    int weight;     /* poids de base : privilegie certaines entrees */
+}
+
+/* ---- Un resultat de recherche : identifiant + score ---- */
+struct SearchHit {
+    int id;
+    int score;      /* plus haut = plus pertinent */
+}
+
+/* ================================================================
+ * Normalisation du texte
+ * ================================================================ */
+
+/* Table de correspondance pour la normalisation : chaque paire
+   (source, remplacement) est appliquee caractere par caractere.
+   Couvre les majuscules ASCII et les accents francais courants, pour que
+   "Paracétamol" et "paracetamol" trouvent la meme entree. */
+str fold_char(str c) {
+    /* majuscules ASCII -> minuscules */
+    if (c == "A") { return "a"; }  if (c == "B") { return "b"; }
+    if (c == "C") { return "c"; }  if (c == "D") { return "d"; }
+    if (c == "E") { return "e"; }  if (c == "F") { return "f"; }
+    if (c == "G") { return "g"; }  if (c == "H") { return "h"; }
+    if (c == "I") { return "i"; }  if (c == "J") { return "j"; }
+    if (c == "K") { return "k"; }  if (c == "L") { return "l"; }
+    if (c == "M") { return "m"; }  if (c == "N") { return "n"; }
+    if (c == "O") { return "o"; }  if (c == "P") { return "p"; }
+    if (c == "Q") { return "q"; }  if (c == "R") { return "r"; }
+    if (c == "S") { return "s"; }  if (c == "T") { return "t"; }
+    if (c == "U") { return "u"; }  if (c == "V") { return "v"; }
+    if (c == "W") { return "w"; }  if (c == "X") { return "x"; }
+    if (c == "Y") { return "y"; }  if (c == "Z") { return "z"; }
+    return c;
+}
+
+/* passe en minuscules et retire les accents (les caracteres accentues
+   sont multi-octets en UTF-8 : on les traite via slice sur 2 octets) */
+str normalize(str input) {
+    str result = "";
+    int n = input.len();
+    int i = 0;
+    while (i < n) {
+        str c = input.slice(i, i + 1);
+        /* les accents UTF-8 commencent par un octet de continuation :
+           on teste les sequences de 2 octets connues */
+        if (i + 2 <= n) {
+            str two = input.slice(i, i + 2);
+            if (two == "é" || two == "è" || two == "ê" || two == "ë") {
+                result = result + "e"; i = i + 2; continue;
+            }
+            if (two == "à" || two == "â" || two == "ä") {
+                result = result + "a"; i = i + 2; continue;
+            }
+            if (two == "î" || two == "ï") {
+                result = result + "i"; i = i + 2; continue;
+            }
+            if (two == "ô" || two == "ö") {
+                result = result + "o"; i = i + 2; continue;
+            }
+            if (two == "ù" || two == "û" || two == "ü") {
+                result = result + "u"; i = i + 2; continue;
+            }
+            if (two == "ç") { result = result + "c"; i = i + 2; continue; }
+        }
+        result = result + fold_char(c);
+        i = i + 1;
+    }
+    return result;
+}
+
+/* ================================================================
+ * Primitives de comparaison textuelle
+ * ================================================================ */
+
+/* position de needle dans haystack, -1 si absent.
+   Note : str fournit contains() nativement, mais on a besoin de la
+   POSITION pour scorer (une occurrence en debut de cle vaut mieux). */
+int index_of(str haystack, str needle) {
+    int hn = haystack.len();
+    int nn = needle.len();
+    if (nn == 0) { return 0; }
+    if (nn > hn) { return -1; }
+    for i in range(hn - nn + 1) {
+        if (haystack.slice(i, i + nn) == needle) { return i; }
+    }
+    return -1;
+}
+
+/* distance de Levenshtein bornee : mesure les fautes de frappe.
+   Bornee a max_distance pour couper tot les comparaisons inutiles. */
+int edit_distance(str a, str b, int max_distance) {
+    int na = a.len();
+    int nb = b.len();
+    /* si les longueurs different trop, inutile de calculer */
+    int diff = na > nb ? na - nb : nb - na;
+    if (diff > max_distance) { return max_distance + 1; }
+
+    /* programmation dynamique sur une seule ligne (memoire O(nb)) */
+    int* previous = alloc<int>(nb + 1);
+    int* current = alloc<int>(nb + 1);
+    for j in range(nb + 1) { previous[j] = j; }
+
+    for i in range(1, na + 1) {
+        current[0] = i;
+        int row_min = i;
+        for j in range(1, nb + 1) {
+            int cost = a.slice(i - 1, i) == b.slice(j - 1, j) ? 0 : 1;
+            int deletion = previous[j] + 1;
+            int insertion = current[j - 1] + 1;
+            int substitution = previous[j - 1] + cost;
+            int best = deletion;
+            if (insertion < best) { best = insertion; }
+            if (substitution < best) { best = substitution; }
+            current[j] = best;
+            if (best < row_min) { row_min = best; }
+        }
+        /* toute la ligne depasse la borne : inutile de continuer */
+        if (row_min > max_distance) { return max_distance + 1; }
+        for j in range(nb + 1) { previous[j] = current[j]; }
+    }
+    return previous[nb];
+}
+
+/* ================================================================
+ * SearchIndex — index inverse trie
+ * ================================================================ */
+struct SearchIndex {
+    IndexEntry* entries;
+    int count;
+    int capacity;
+    bool sorted;      /* faux tant qu'une insertion n'a pas ete suivie d'un tri */
+
+    void init(int capacity) {
+        self.capacity = capacity > 0 ? capacity : 16;
+        self.entries = alloc<IndexEntry>(self.capacity);
+        self.count = 0;
+        self.sorted = true;
+    }
+
+    int size() { return self.count; }
+
+    /* ajoute une cle ; la cle est normalisee a l'insertion */
+    void add(str key, int id, int weight) {
+        if (self.count >= self.capacity) { self.grow(); }
+        self.entries[self.count].key = normalize(key);
+        self.entries[self.count].id = id;
+        self.entries[self.count].weight = weight;
+        self.count = self.count + 1;
+        self.sorted = false;
+    }
+
+    /* double la capacite en recopiant les entrees */
+    void grow() {
+        int new_capacity = self.capacity * 2;
+        IndexEntry* bigger = alloc<IndexEntry>(new_capacity);
+        for i in range(self.count) {
+            bigger[i].key = self.entries[i].key;
+            bigger[i].id = self.entries[i].id;
+            bigger[i].weight = self.entries[i].weight;
+        }
+        self.entries = bigger;
+        self.capacity = new_capacity;
+    }
+
+    /* tri par insertion sur la cle : l'index reste petit, et le tri par
+       insertion est optimal sur des donnees deja presque triees (cas
+       courant quand on recharge un catalogue serialise) */
+    void sort_entries() {
+        if (self.sorted) { return; }
+        for i in range(1, self.count) {
+            IndexEntry pivot = self.entries[i];
+            int j = i - 1;
+            while (j >= 0 && self.entries[j].key > pivot.key) {
+                self.entries[j + 1] = self.entries[j];
+                j = j - 1;
+            }
+            self.entries[j + 1] = pivot;
+        }
+        self.sorted = true;
+    }
+
+    /* calcule le score d'une entree pour un terme donne.
+       0 = pas de correspondance. Le score combine le type de
+       correspondance et le poids de base de l'entree. */
+    int score_entry(int position, str term, MatchMode mode) {
+        str key = self.entries[position].key;
+        int weight = self.entries[position].weight;
+
+        match (mode) {
+            MatchMode.EXACT => {
+                return key == term ? 1000 + weight : 0;
+            }
+            MatchMode.PREFIX => {
+                if (!key.starts_with(term)) { return 0; }
+                /* plus le prefixe couvre la cle, plus le score est haut */
+                int coverage = term.len() * 100 / key.len();
+                return 500 + coverage + weight;
+            }
+            MatchMode.SUBSTRING => {
+                int at = index_of(key, term);
+                if (at < 0) { return 0; }
+                /* une occurrence en debut de cle vaut mieux qu'en fin */
+                return 300 - at + weight;
+            }
+            MatchMode.FUZZY => {
+                /* une correspondance exacte ou prefixe prime toujours */
+                if (key == term) { return 1000 + weight; }
+                if (key.starts_with(term)) { return 500 + weight; }
+                int at = index_of(key, term);
+                if (at >= 0) { return 300 - at + weight; }
+                /* sinon on tolere jusqu'a 2 fautes de frappe */
+                int distance = edit_distance(key, term, 2);
+                if (distance > 2) { return 0; }
+                return 200 - distance * 50 + weight;
+            }
+        }
+        return 0;
+    }
+
+    /* interroge l'index ; remplit hits et retourne le nombre de resultats,
+       tries par score decroissant. max_hits borne la sortie. */
+    int query(str term, MatchMode mode, SearchHit* hits, int max_hits) {
+        str needle = normalize(term);
+        if (needle.len() == 0) { return 0; }
+        self.sort_entries();
+
+        int found = 0;
+        for i in range(self.count) {
+            int score = self.score_entry(i, needle, mode);
+            if (score > 0) {
+                if (found < max_hits) {
+                    hits[found].id = self.entries[i].id;
+                    hits[found].score = score;
+                    found = found + 1;
+                }
+                else {
+                    /* liste pleine : remplacer le plus faible s'il est battu */
+                    int weakest = 0;
+                    for j in range(1, found) {
+                        if (hits[j].score < hits[weakest].score) { weakest = j; }
+                    }
+                    if (score > hits[weakest].score) {
+                        hits[weakest].id = self.entries[i].id;
+                        hits[weakest].score = score;
+                    }
+                }
+            }
+        }
+        /* tri final par score decroissant */
+        for i in range(1, found) {
+            SearchHit pivot = hits[i];
+            int j = i - 1;
+            while (j >= 0 && hits[j].score < pivot.score) {
+                hits[j + 1] = hits[j];
+                j = j - 1;
+            }
+            hits[j + 1] = pivot;
+        }
+        return found;
+    }
+
+    /* raccourci : recherche tolerante aux fautes, mode par defaut */
+    int search(str term, SearchHit* hits, int max_hits) {
+        return self.query(term, MatchMode.FUZZY, hits, max_hits);
+    }
+}
+
+/* point d'entree du sous-projet : l'index est une bibliotheque, mais
+   MATL-ABC exige un entry compilable par cible */
+int search_module_main() { return 0; }

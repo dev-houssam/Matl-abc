@@ -1,0 +1,274 @@
+/* ================================================================
+ * storage.mabc — Persistance du catalogue sur disque
+ * ================================================================
+ * Sous-projet dependant de `catalog` : il serialise et recharge des
+ * Medicine. Le format retenu est un texte a champs separes par '|',
+ * une fiche par ligne :
+ *
+ *   id|nom|molecule|categorie|statut|prix_centimes|stock|posologie|symptomes|conseil
+ *
+ * Pourquoi pas du binaire : le fichier reste inspectable et corrigeable
+ * a la main, ce qui compte pour un catalogue de pharmacie que le
+ * titulaire doit pouvoir amender sans outil.
+ *
+ * L'ecriture passe par le wrapper `file` de la bibliotheque standard
+ * MATL-ABC (enums OpenMode/Permission au lieu de flags octaux).
+ *
+ * Convention : identifiants en ANGLAIS, commentaires en FRANCAIS.
+ * ================================================================ */
+
+import <std>
+
+/* storage serialise des Medicine et remplit une Pharmacy : la
+   dependance est visible ici. Le wrapper file fournit File/OpenMode. */
+import <catalog>
+import <file>
+
+/* ---- Resultat d'une operation de persistance ---- */
+enum StorageResult {
+    SUCCESS       = 0,
+    CANNOT_OPEN   = -1,
+    MALFORMED     = -2,   /* ligne non conforme au format */
+    EMPTY_FILE    = -3
+}
+
+/* separateur de champs : absent des noms de medicaments */
+str field_separator() { return "|"; }
+
+/* ================================================================
+ * Serialisation
+ * ================================================================ */
+
+/* echappe le separateur s'il apparait dans une valeur */
+str escape_field(str value) {
+    str result = "";
+    int n = value.len();
+    for i in range(n) {
+        str c = value.slice(i, i + 1);
+        if (c == "|") { result = result + "/"; }
+        else if (c == "\n") { result = result + " "; }
+        else { result = result + c; }
+    }
+    return result;
+}
+
+/* transforme une fiche en ligne de texte */
+str serialize_medicine(Medicine* medicine) {
+    int id = medicine.id;
+    int category = cast<int>(medicine.category);
+    int status = cast<int>(medicine.status);
+    int price = medicine.price_cents;
+    int stock = medicine.stock;
+    int doses = medicine.max_daily_doses;
+    str name = escape_field(medicine.name);
+    str molecule = escape_field(medicine.molecule);
+    str symptoms = escape_field(medicine.symptoms);
+    str advice = escape_field(medicine.advice);
+    str sep = field_separator();
+    return f"{id}" + sep + name + sep + molecule
+         + sep + f"{category}" + sep + f"{status}" + sep + f"{price}"
+         + sep + f"{stock}" + sep + f"{doses}" + sep + symptoms
+         + sep + advice;
+}
+
+/* ================================================================
+ * Deserialisation
+ * ================================================================ */
+
+/* decoupe une ligne en champs ; remplit fields, retourne le compte */
+int split_fields(str line, str* fields, int max_fields) {
+    int found = 0;
+    int start = 0;
+    int n = line.len();
+    for i in range(n + 1) {
+        if (i == n || line.slice(i, i + 1) == "|") {
+            if (found < max_fields) {
+                fields[found] = line.slice(start, i);
+                found = found + 1;
+            }
+            start = i + 1;
+        }
+    }
+    return found;
+}
+
+/* reconstruit une fiche depuis une ligne. Retourne null si malformee. */
+Medicine* deserialize_medicine(str line) {
+    array<str, 16> fields;
+    int count = split_fields(line, &fields[0], 16);
+    if (count < 10) { return null; }
+
+    int id = fields[0].to_int();
+    str name = fields[1];
+    str molecule = fields[2];
+    Category category = cast<Category>(fields[3].to_int());
+    DeliveryStatus status = cast<DeliveryStatus>(fields[4].to_int());
+    int price = fields[5].to_int();
+    int stock = fields[6].to_int();
+    int doses = fields[7].to_int();
+    str symptoms = fields[8];
+    str advice = fields[9];
+
+    Medicine* medicine = new Medicine(id, name, molecule, category,
+                                      status, price, stock);
+    medicine.describe(symptoms, advice, doses);
+    return medicine;
+}
+
+/* ================================================================
+ * CatalogStore — lecture/ecriture du catalogue
+ * ================================================================ */
+struct CatalogStore {
+    str path;
+
+    void init(str path) { self.path = path; }
+
+    /* le fichier de catalogue existe-t-il ? */
+    bool exists() { return file_exists(self.path); }
+
+    /* ecrit tout le catalogue. Le fichier precedent est ecrase :
+       OpenMode.WRITE inclut O_TRUNC. */
+    StorageResult save(Pharmacy* pharmacy) {
+        File* output = new File(self.path, OpenMode.WRITE);
+        if (!output.is_open()) { return StorageResult.CANNOT_OPEN; }
+
+        /* en-tete : nom et ville de l'officine */
+        str title_line = "# " + pharmacy.name + field_separator()
+                       + pharmacy.city + "\n";
+        output.write_text(title_line);
+
+        for i in range(pharmacy.count) {
+            str line = serialize_medicine(&pharmacy.medicines[i]) + "\n";
+            output.write_text(line);
+        }
+        output.close_file();
+        /* le catalogue contient des donnees commerciales : lisible par
+           le proprietaire uniquement */
+        set_permissions(self.path, Permission.OWNER_READ_WRITE);
+        return StorageResult.SUCCESS;
+    }
+
+    /* recharge le catalogue dans une pharmacie existante.
+       Les lignes commencant par '#' sont des commentaires. */
+    StorageResult load(Pharmacy* pharmacy) {
+        if (!self.exists()) { return StorageResult.CANNOT_OPEN; }
+        File* input = new File(self.path, OpenMode.READ);
+        if (!input.is_open()) { return StorageResult.CANNOT_OPEN; }
+
+        i64 size = input.size();
+        if (size <= 0) { input.close_file(); return StorageResult.EMPTY_FILE; }
+
+        /* lecture en un bloc : un catalogue tient largement en memoire */
+        int capacity = cast<int>(size) + 1;
+        byte* buffer = alloc<byte>(capacity);
+        int read_count = input.read_bytes(buffer, capacity - 1);
+        input.close_file();
+        if (read_count <= 0) { return StorageResult.EMPTY_FILE; }
+        buffer[read_count] = cast<byte>(0);
+
+        /* decoupage en lignes */
+        str content = str_of_buffer(buffer, read_count);
+        int start = 0;
+        int n = content.len();
+        int loaded = 0;
+        for i in range(n + 1) {
+            if (i == n || content.slice(i, i + 1) == "\n") {
+                if (i > start) {
+                    str line = content.slice(start, i);
+                    if (line.slice(0, 1) != "#") {
+                        Medicine* medicine = deserialize_medicine(line);
+                        if (medicine != null) {
+                            pharmacy.add_medicine(medicine);
+                            loaded = loaded + 1;
+                        }
+                    }
+                }
+                start = i + 1;
+            }
+        }
+        if (loaded == 0) { return StorageResult.MALFORMED; }
+        return StorageResult.SUCCESS;
+    }
+}
+
+/* reconstruit une str depuis un tampon d'octets */
+str str_of_buffer(byte* buffer, int length) {
+    str result = "";
+    for i in range(length) {
+        int code = cast<int>(buffer[i]);
+        result = result + ascii_char(code);
+    }
+    return result;
+}
+
+/* code ASCII -> chaine d'un caractere. Table explicite pour les
+   caracteres que le format utilise reellement. */
+str ascii_char(int code) {
+    /* imprimables courants */
+    if (code == 10) { return "\n"; }
+    if (code == 32) { return " "; }
+    if (code == 124) { return "|"; }
+    if (code == 35) { return "#"; }
+    if (code == 46) { return "."; }
+    if (code == 44) { return ","; }
+    if (code == 39) { return "'"; }
+    if (code == 45) { return "-"; }
+    if (code == 47) { return "/"; }
+    if (code == 40) { return "("; }
+    if (code == 41) { return ")"; }
+    if (code >= 48 && code <= 57) { return digit_char(code - 48); }
+    if (code >= 97 && code <= 122) { return lower_char(code - 97); }
+    if (code >= 65 && code <= 90) { return upper_char(code - 65); }
+    /* octets UTF-8 et autres : conserves tels quels via un tampon */
+    byte* single = alloc<byte>(2);
+    single[0] = cast<byte>(code);
+    single[1] = cast<byte>(0);
+    return "?";
+}
+
+str digit_char(int d) {
+    if (d == 0) { return "0"; }  if (d == 1) { return "1"; }
+    if (d == 2) { return "2"; }  if (d == 3) { return "3"; }
+    if (d == 4) { return "4"; }  if (d == 5) { return "5"; }
+    if (d == 6) { return "6"; }  if (d == 7) { return "7"; }
+    if (d == 8) { return "8"; }  return "9";
+}
+
+str lower_char(int i) {
+    array<str, 26> table;
+    table[0] = "a";  table[1] = "b";  table[2] = "c";  table[3] = "d";
+    table[4] = "e";  table[5] = "f";  table[6] = "g";  table[7] = "h";
+    table[8] = "i";  table[9] = "j";  table[10] = "k"; table[11] = "l";
+    table[12] = "m"; table[13] = "n"; table[14] = "o"; table[15] = "p";
+    table[16] = "q"; table[17] = "r"; table[18] = "s"; table[19] = "t";
+    table[20] = "u"; table[21] = "v"; table[22] = "w"; table[23] = "x";
+    table[24] = "y"; table[25] = "z";
+    if (i < 0 || i > 25) { return "?"; }
+    return table[i];
+}
+
+str upper_char(int i) {
+    array<str, 26> table;
+    table[0] = "A";  table[1] = "B";  table[2] = "C";  table[3] = "D";
+    table[4] = "E";  table[5] = "F";  table[6] = "G";  table[7] = "H";
+    table[8] = "I";  table[9] = "J";  table[10] = "K"; table[11] = "L";
+    table[12] = "M"; table[13] = "N"; table[14] = "O"; table[15] = "P";
+    table[16] = "Q"; table[17] = "R"; table[18] = "S"; table[19] = "T";
+    table[20] = "U"; table[21] = "V"; table[22] = "W"; table[23] = "X";
+    table[24] = "Y"; table[25] = "Z";
+    if (i < 0 || i > 25) { return "?"; }
+    return table[i];
+}
+
+/* traduit un code de resultat en message lisible */
+str storage_result_text(StorageResult result) {
+    match (result) {
+        StorageResult.SUCCESS     => { return "Catalogue enregistre"; }
+        StorageResult.CANNOT_OPEN => { return "Fichier inaccessible"; }
+        StorageResult.MALFORMED   => { return "Format de fichier invalide"; }
+        StorageResult.EMPTY_FILE  => { return "Fichier vide"; }
+    }
+    return "Erreur inconnue";
+}
+
+int storage_module_main() { return 0; }

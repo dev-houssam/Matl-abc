@@ -1,0 +1,648 @@
+/* ================================================================
+ * main.mabc — PharmaTerm : plateforme d'achat et de conseil
+ * ================================================================
+ * Projet principal. Il n'implemente AUCUNE brique technique : tout
+ * vient des quatre sous-projets, qu'il se contente d'assembler.
+ *
+ *   search   -> SearchIndex, SearchHit, MatchMode      (recherche)
+ *   catalog  -> Medicine, Pharmacy, CartLine, Category (metier)
+ *   display  -> Terminal, Color, BorderStyle, cadres   (rendu)
+ *   storage  -> CatalogStore, StorageResult            (persistance)
+ *
+ * Aucun `import` explicite de ces modules n'est necessaire : ils sont
+ * declares dans [subprojects] du conf.toml, et chaque sous-projet
+ * expose ses modules via [project] exports. Le compilateur les fusionne
+ * automatiquement, dans l'ordre topologique.
+ *
+ * Convention : identifiants en ANGLAIS, commentaires en FRANCAIS.
+ * ================================================================ */
+
+/* --- bibliotheques systeme --- */
+import <std>
+import <unistd>
+import <fcntl>
+import <stat>
+import <termios>
+
+/* --- sous-projets : chaque ligne dit ce que ce fichier utilise ---
+   Sans ces imports, il faudrait ouvrir conf.toml pour savoir d'ou
+   viennent Pharmacy, SearchIndex, Terminal et CatalogStore. */
+import <search>
+import <catalog>
+import <display>
+import <storage>
+
+/* largeur de rendu : 78 colonnes tiennent dans un terminal standard */
+int screen_width() { return 78; }
+
+/* chemin du catalogue persistant */
+str catalog_path() { return "data/catalogue.db"; }
+
+/* ================================================================
+ * Session — l'etat de l'application
+ * ================================================================ */
+struct Session {
+    Pharmacy* pharmacy;
+    CatalogStore* store;
+    Terminal* terminal;
+    CartLine* cart;
+    int cart_count;
+    int cart_capacity;
+    bool has_prescription;
+    bool running;
+
+    void init(Pharmacy* pharmacy, CatalogStore* store, Terminal* terminal) {
+        self.pharmacy = pharmacy;
+        self.store = store;
+        self.terminal = terminal;
+        self.cart_capacity = 32;
+        self.cart = alloc<CartLine>(self.cart_capacity);
+        self.cart_count = 0;
+        self.has_prescription = false;
+        self.running = true;
+    }
+
+    /* ajoute au panier apres verification des regles de delivrance */
+    CatalogResult add_to_cart(int medicine_id, int quantity) {
+        CatalogResult check =
+            self.pharmacy.check_order(medicine_id, quantity, self.has_prescription);
+        if (check != CatalogResult.SUCCESS) { return check; }
+
+        Medicine* medicine = self.pharmacy.find_by_id(medicine_id);
+        /* si la ligne existe deja, on cumule au lieu de dupliquer */
+        for i in range(self.cart_count) {
+            if (self.cart[i].medicine_id == medicine_id) {
+                int merged = self.cart[i].quantity + quantity;
+                CatalogResult recheck =
+                    self.pharmacy.check_order(medicine_id, merged, self.has_prescription);
+                if (recheck != CatalogResult.SUCCESS) { return recheck; }
+                self.cart[i].quantity = merged;
+                return CatalogResult.SUCCESS;
+            }
+        }
+        if (self.cart_count >= self.cart_capacity) { return CatalogResult.INVALID_AMOUNT; }
+        self.cart[self.cart_count] =
+            *(new CartLine(medicine_id, quantity, medicine.price_cents));
+        self.cart_count = self.cart_count + 1;
+        return CatalogResult.SUCCESS;
+    }
+
+    int cart_total_cents() {
+        int total = 0;
+        for i in range(self.cart_count) { total = total + self.cart[i].total_cents(); }
+        return total;
+    }
+
+    int cart_item_count() {
+        int total = 0;
+        for i in range(self.cart_count) { total = total + self.cart[i].quantity; }
+        return total;
+    }
+
+    void clear_cart() { self.cart_count = 0; }
+
+    /* valide la commande : decremente les stocks et vide le panier */
+    CatalogResult checkout() {
+        if (self.cart_count == 0) { return CatalogResult.INVALID_AMOUNT; }
+        /* premiere passe : tout verifier avant de rien modifier */
+        for i in range(self.cart_count) {
+            CatalogResult check = self.pharmacy.check_order(
+                self.cart[i].medicine_id, self.cart[i].quantity,
+                self.has_prescription);
+            if (check != CatalogResult.SUCCESS) { return check; }
+        }
+        /* seconde passe : appliquer */
+        for i in range(self.cart_count) {
+            self.pharmacy.commit_order(self.cart[i].medicine_id,
+                                       self.cart[i].quantity,
+                                       self.has_prescription);
+        }
+        self.clear_cart();
+        return CatalogResult.SUCCESS;
+    }
+}
+
+/* ================================================================
+ * Rendu : fiches et listes de medicaments
+ * ================================================================ */
+
+/* une ligne de resultat compacte, avec score de pertinence */
+void render_medicine_row(Medicine* medicine, int score, int rank) {
+    str rank_text = colored(pad(f"{rank}.", 4, Align.RIGHT), Color.GRAY);
+    str name = emphasized(pad(shorten(medicine.name, 22), 22, Align.LEFT),
+                          Color.BRIGHT_WHITE);
+    str molecule = colored(pad(shorten(medicine.molecule, 18), 18, Align.LEFT),
+                           Color.CYAN);
+    str price = colored(pad(medicine.price_text() + " €", 9, Align.RIGHT),
+                        Color.BRIGHT_GREEN);
+
+    str availability = "";
+    if (medicine.stock == 0) { availability = colored("epuise", Color.RED); }
+    else if (medicine.stock < 10) {
+        availability = colored(f"{medicine.stock} restants", Color.YELLOW);
+    }
+    else { availability = colored(f"{medicine.stock} en stock", Color.GREEN); }
+
+    str flag = medicine.needs_prescription()
+             ? colored(" Rx", Color.MAGENTA) : "   ";
+
+    printf("%s %s %s %s%s  %s\n", rank_text.data(), name.data(),
+           molecule.data(), price.data(), flag.data(),
+           pad(availability, 14, Align.LEFT).data());
+}
+
+/* fiche detaillee encadree */
+void render_medicine_card(Medicine* medicine) {
+    int width = screen_width();
+    printf("\n");
+    draw_top(width, medicine.name, BorderStyle.ROUND, Color.BRIGHT_CYAN);
+
+    draw_row(colored("Molecule      : ", Color.GRAY) + medicine.molecule,
+             width, BorderStyle.ROUND, Color.BRIGHT_CYAN);
+    draw_row(colored("Categorie     : ", Color.GRAY) + medicine.category_text(),
+             width, BorderStyle.ROUND, Color.BRIGHT_CYAN);
+
+    str status = medicine.needs_prescription()
+               ? colored(medicine.status_text(), Color.MAGENTA)
+               : colored(medicine.status_text(), Color.GREEN);
+    draw_row(colored("Delivrance    : ", Color.GRAY) + status,
+             width, BorderStyle.ROUND, Color.BRIGHT_CYAN);
+
+    draw_row(colored("Prix          : ", Color.GRAY)
+             + emphasized(medicine.price_text() + " €", Color.BRIGHT_GREEN),
+             width, BorderStyle.ROUND, Color.BRIGHT_CYAN);
+
+    str gauge = stock_gauge(medicine.stock, 20);
+    draw_row(colored("Stock         : ", Color.GRAY) + gauge
+             + f"  {medicine.stock}",
+             width, BorderStyle.ROUND, Color.BRIGHT_CYAN);
+
+    if (medicine.max_daily_doses > 0) {
+        draw_row(colored("Posologie max : ", Color.GRAY)
+                 + f"{medicine.max_daily_doses} prises / 24h",
+                 width, BorderStyle.ROUND, Color.BRIGHT_CYAN);
+    }
+
+    if (medicine.symptoms.len() > 0) {
+        draw_separator(width, BorderStyle.ROUND, Color.BRIGHT_CYAN);
+        draw_row(colored("Indications   : ", Color.GRAY) + medicine.symptoms,
+                 width, BorderStyle.ROUND, Color.BRIGHT_CYAN);
+    }
+
+    if (medicine.advice.len() > 0) {
+        draw_separator(width, BorderStyle.ROUND, Color.BRIGHT_CYAN);
+        draw_row(emphasized("Conseil du pharmacien", Color.BRIGHT_YELLOW),
+                 width, BorderStyle.ROUND, Color.BRIGHT_CYAN);
+        /* le conseil peut depasser la largeur : on le repartit sur
+           plusieurs lignes en coupant aux espaces */
+        render_wrapped(medicine.advice, width - 4, width);
+    }
+    draw_bottom(width, BorderStyle.ROUND, Color.BRIGHT_CYAN);
+}
+
+/* repartit un texte long sur plusieurs lignes encadrees */
+void render_wrapped(str text, int line_width, int frame_width) {
+    str current = "";
+    int start = 0;
+    int n = text.len();
+    for i in range(n + 1) {
+        if (i == n || text.slice(i, i + 1) == " ") {
+            str token = text.slice(start, i);
+            if (display_width(current) + display_width(token) + 1 > line_width) {
+                draw_row(colored(current, Color.WHITE), frame_width,
+                         BorderStyle.ROUND, Color.BRIGHT_CYAN);
+                current = token;
+            }
+            else {
+                current = current.len() == 0 ? token : current + " " + token;
+            }
+            start = i + 1;
+        }
+    }
+    if (current.len() > 0) {
+        draw_row(colored(current, Color.WHITE), frame_width,
+                 BorderStyle.ROUND, Color.BRIGHT_CYAN);
+    }
+}
+
+/* ================================================================
+ * Ecrans
+ * ================================================================ */
+
+void render_header(Session* session) {
+    clear_screen();
+    int width = screen_width();
+    str subtitle = session.pharmacy.name + " — " + session.pharmacy.city;
+    draw_banner("PHARMATERM", subtitle, width);
+
+    /* barre d'etat : panier et ordonnance */
+    int items = session.cart_item_count();
+    int total = session.cart_total_cents();
+    int euros = total / 100;
+    int cents = total % 100;
+    str cart_text = items == 0
+        ? colored("panier vide", Color.GRAY)
+        : emphasized(f"{items} article(s) — {euros}.{cents} €", Color.BRIGHT_GREEN);
+    str rx_text = session.has_prescription
+        ? colored("ordonnance presentee", Color.GREEN)
+        : colored("sans ordonnance", Color.GRAY);
+    printf("  %s   %s\n\n", cart_text.data(), rx_text.data());
+}
+
+void render_menu() {
+    int width = screen_width();
+    draw_top(width, "Menu", BorderStyle.SINGLE, Color.BLUE);
+    draw_row(emphasized("1", Color.BRIGHT_YELLOW) + colored(" — Rechercher un medicament ou un symptome", Color.WHITE),
+             width, BorderStyle.SINGLE, Color.BLUE);
+    draw_row(emphasized("2", Color.BRIGHT_YELLOW) + colored(" — Parcourir par categorie", Color.WHITE),
+             width, BorderStyle.SINGLE, Color.BLUE);
+    draw_row(emphasized("3", Color.BRIGHT_YELLOW) + colored(" — Voir le panier", Color.WHITE),
+             width, BorderStyle.SINGLE, Color.BLUE);
+    draw_row(emphasized("4", Color.BRIGHT_YELLOW) + colored(" — Presenter / retirer une ordonnance", Color.WHITE),
+             width, BorderStyle.SINGLE, Color.BLUE);
+    draw_row(emphasized("5", Color.BRIGHT_YELLOW) + colored(" — Valider la commande", Color.WHITE),
+             width, BorderStyle.SINGLE, Color.BLUE);
+    draw_row(emphasized("6", Color.BRIGHT_YELLOW) + colored(" — Enregistrer le catalogue", Color.WHITE),
+             width, BorderStyle.SINGLE, Color.BLUE);
+    draw_row(emphasized("q", Color.BRIGHT_RED) + colored(" — Quitter", Color.WHITE),
+             width, BorderStyle.SINGLE, Color.BLUE);
+    draw_bottom(width, BorderStyle.SINGLE, Color.BLUE);
+}
+
+/* ecran de recherche : c'est ici que le sous-projet `search` sert */
+void screen_search(Session* session, str term) {
+    render_header(session);
+    printf("  %s %s\n\n",
+           colored("Recherche :", Color.GRAY).data(),
+           emphasized(term, Color.BRIGHT_WHITE).data());
+
+    array<SearchHit, 12> hits;
+    int found = session.pharmacy.search(term, &hits[0], 12);
+
+    if (found == 0) {
+        draw_warning("Aucun resultat. La recherche tolere les fautes de frappe,");
+        printf("    essayez un nom commercial, une molecule ou un symptome.\n");
+        return;
+    }
+
+    printf("  %s\n", colored(repeat("─", screen_width() - 4), Color.GRAY).data());
+    for i in range(found) {
+        Medicine* medicine = session.pharmacy.find_by_id(hits[i].id);
+        if (medicine != null) { render_medicine_row(medicine, hits[i].score, i + 1); }
+    }
+    printf("  %s\n", colored(repeat("─", screen_width() - 4), Color.GRAY).data());
+    draw_info(f"{found} resultat(s) — les plus pertinents en premier");
+}
+
+void screen_cart(Session* session) {
+    render_header(session);
+    int width = screen_width();
+    draw_top(width, "Panier", BorderStyle.HEAVY, Color.BRIGHT_GREEN);
+
+    if (session.cart_count == 0) {
+        draw_row(colored("Votre panier est vide.", Color.GRAY),
+                 width, BorderStyle.HEAVY, Color.BRIGHT_GREEN);
+        draw_bottom(width, BorderStyle.HEAVY, Color.BRIGHT_GREEN);
+        return;
+    }
+
+    for i in range(session.cart_count) {
+        Medicine* medicine = session.pharmacy.find_by_id(session.cart[i].medicine_id);
+        if (medicine == null) { continue; }
+        int line_total = session.cart[i].total_cents();
+        str quantity = colored(pad(f"{session.cart[i].quantity} x", 5, Align.RIGHT),
+                               Color.BRIGHT_YELLOW);
+        str name = pad(shorten(medicine.name, 30), 30, Align.LEFT);
+        str unit = colored(pad(medicine.price_text() + " €", 10, Align.RIGHT), Color.GRAY);
+        str total = emphasized(
+            pad(f"{line_total / 100}.{line_total % 100} €", 12, Align.RIGHT),
+            Color.BRIGHT_GREEN);
+        draw_row(quantity + " " + name + unit + total,
+                 width, BorderStyle.HEAVY, Color.BRIGHT_GREEN);
+    }
+
+    draw_separator(width, BorderStyle.HEAVY, Color.BRIGHT_GREEN);
+    int total = session.cart_total_cents();
+    str total_line = pad(emphasized("TOTAL", Color.BRIGHT_WHITE), 46, Align.LEFT)
+                   + emphasized(pad(f"{total / 100}.{total % 100} €", 12, Align.RIGHT),
+                                Color.BRIGHT_GREEN);
+    draw_row(total_line, width, BorderStyle.HEAVY, Color.BRIGHT_GREEN);
+    draw_bottom(width, BorderStyle.HEAVY, Color.BRIGHT_GREEN);
+}
+
+void screen_category(Session* session, Category category) {
+    render_header(session);
+    array<int, 32> ids;
+    int found = session.pharmacy.list_by_category(category, &ids[0], 32);
+
+    str title = "Categorie : ";
+    /* on prend la premiere fiche pour obtenir le libelle de categorie */
+    if (found > 0) {
+        Medicine* first = session.pharmacy.find_by_id(ids[0]);
+        title = title + first.category_text();
+    }
+    printf("  %s\n\n", emphasized(title, Color.BRIGHT_WHITE).data());
+
+    if (found == 0) { draw_warning("Aucun medicament dans cette categorie."); return; }
+    printf("  %s\n", colored(repeat("─", screen_width() - 4), Color.GRAY).data());
+    for i in range(found) {
+        Medicine* medicine = session.pharmacy.find_by_id(ids[i]);
+        if (medicine != null) { render_medicine_row(medicine, 0, i + 1); }
+    }
+    printf("  %s\n", colored(repeat("─", screen_width() - 4), Color.GRAY).data());
+    draw_info(f"{found} medicament(s)");
+}
+
+/* ================================================================
+ * Catalogue de demonstration
+ * ================================================================ */
+
+/* remplit une officine avec un catalogue realiste ; utilise quand
+   aucun fichier de persistance n'existe encore */
+void seed_catalog(Pharmacy* pharmacy) {
+    Medicine* m1 = new Medicine(1, "Doliprane 500mg", "paracetamol",
+        Category.ANALGESIC, DeliveryStatus.OVER_THE_COUNTER, 215, 48);
+    m1.describe("douleur fievre migraine mal de tete courbature",
+        "Ne jamais depasser 3g par jour chez l'adulte. Respecter un intervalle de 4 heures entre les prises. Contre-indique en cas d'insuffisance hepatique.", 6);
+    pharmacy.add_medicine(m1);
+
+    Medicine* m2 = new Medicine(2, "Advil 200mg", "ibuprofene",
+        Category.ANALGESIC, DeliveryStatus.OVER_THE_COUNTER, 289, 32);
+    m2.describe("douleur inflammation fievre regles dentaire",
+        "A prendre au cours d'un repas pour proteger l'estomac. Deconseille en cas d'ulcere ou de grossesse au troisieme trimestre.", 3);
+    pharmacy.add_medicine(m2);
+
+    Medicine* m3 = new Medicine(3, "Amoxicilline 500mg", "amoxicilline",
+        Category.ANTIBIOTIC, DeliveryStatus.PRESCRIPTION, 640, 15);
+    m3.describe("angine bronchite otite infection bacterienne",
+        "Terminer imperativement la totalite du traitement, meme si les symptomes disparaissent avant. Signaler toute allergie aux penicillines.", 3);
+    pharmacy.add_medicine(m3);
+
+    Medicine* m4 = new Medicine(4, "Aerius 5mg", "desloratadine",
+        Category.ANTIHISTAMINE, DeliveryStatus.OVER_THE_COUNTER, 745, 22);
+    m4.describe("allergie rhinite eternuement urticaire pollen",
+        "Une prise par jour, de preference le matin. Ne provoque generalement pas de somnolence, mais la prudence reste de mise au volant.", 1);
+    pharmacy.add_medicine(m4);
+
+    Medicine* m5 = new Medicine(5, "Betadine 10%", "povidone iodee",
+        Category.ANTISEPTIC, DeliveryStatus.OVER_THE_COUNTER, 425, 30);
+    m5.describe("plaie coupure desinfection brulure superficielle",
+        "Usage externe strict. Ne pas utiliser chez le nourrisson de moins d'un mois ni en cas d'allergie a l'iode.", 4);
+    pharmacy.add_medicine(m5);
+
+    Medicine* m6 = new Medicine(6, "Smecta", "diosmectite",
+        Category.DIGESTIVE, DeliveryStatus.OVER_THE_COUNTER, 512, 26);
+    m6.describe("diarrhee ballonnement brulure estomac",
+        "Diluer le sachet dans un demi-verre d'eau. Espacer d'au moins deux heures de toute autre prise medicamenteuse.", 3);
+    pharmacy.add_medicine(m6);
+
+    Medicine* m7 = new Medicine(7, "Ventoline", "salbutamol",
+        Category.RESPIRATORY, DeliveryStatus.PRESCRIPTION, 495, 8);
+    m7.describe("asthme essoufflement bronchospasme toux",
+        "Bien agiter avant emploi. Si le recours depasse deux fois par semaine, consulter : le traitement de fond doit etre reevalue.", 8);
+    pharmacy.add_medicine(m7);
+
+    Medicine* m8 = new Medicine(8, "Vitamine D3 Uvedose", "cholecalciferol",
+        Category.VITAMIN, DeliveryStatus.OVER_THE_COUNTER, 350, 40);
+    m8.describe("carence fatigue os immunite hiver",
+        "Une ampoule tous les trois mois en periode hivernale. L'exposition solaire reste la premiere source de vitamine D.", 1);
+    pharmacy.add_medicine(m8);
+
+    Medicine* m9 = new Medicine(9, "Biafine", "trolamine",
+        Category.DERMATOLOGY, DeliveryStatus.OVER_THE_COUNTER, 675, 18);
+    m9.describe("brulure coup de soleil erytheme rougeur peau",
+        "Appliquer en couche epaisse sur peau non lesee. Ne pas utiliser sur une plaie qui saigne ou infectee.", 3);
+    pharmacy.add_medicine(m9);
+
+    Medicine* m10 = new Medicine(10, "Codeine 30mg", "codeine",
+        Category.ANALGESIC, DeliveryStatus.RESTRICTED, 890, 5);
+    m10.describe("douleur intense toux seche rebelle",
+        "Substance a risque de dependance. Duree de traitement limitee. Interdit avant 12 ans et en cas d'insuffisance respiratoire.", 4);
+    pharmacy.add_medicine(m10);
+}
+
+/* ================================================================
+ * Demonstration scriptee
+ * ================================================================ */
+
+/* L'application est concue pour un pilotage interactif au clavier
+   (mode brut via le wrapper termios). Hors terminal -- redirection,
+   integration continue -- read() ne recoit rien : on deroule alors un
+   scenario scripte qui exerce toutes les briques. */
+void run_demo(Session* session) {
+    /* 1. accueil */
+    render_header(session);
+    render_menu();
+    printf("\n");
+    draw_info("Mode demonstration (entree standard non interactive)");
+    printf("\n");
+
+    /* 2. recherche par nom commercial */
+    screen_search(session, "doliprane");
+    printf("\n");
+
+    /* 3. recherche tolerante aux fautes -- sous-projet `search` */
+    screen_search(session, "paracetmol");
+    printf("\n");
+
+    /* 4. recherche par symptome */
+    screen_search(session, "allergie");
+    printf("\n");
+
+    /* 5. fiche detaillee avec conseil */
+    Medicine* detail = session.pharmacy.find_by_id(1);
+    render_medicine_card(detail);
+    printf("\n");
+
+    /* 6. parcours par categorie */
+    screen_category(session, Category.ANALGESIC);
+    printf("\n");
+
+    /* 7. regles de delivrance -- sous-projet `catalog` */
+    render_header(session);
+    printf("  %s\n\n", emphasized("Regles de delivrance", Color.BRIGHT_WHITE).data());
+
+    CatalogResult r1 = session.add_to_cart(1, 2);
+    draw_success("2 x Doliprane ajoutes — " + catalog_result_text(r1));
+
+    CatalogResult r2 = session.add_to_cart(3, 1);
+    draw_error("Amoxicilline refusee — " + catalog_result_text(r2));
+
+    session.has_prescription = true;
+    draw_info("Ordonnance presentee");
+
+    CatalogResult r3 = session.add_to_cart(3, 1);
+    draw_success("Amoxicilline acceptee — " + catalog_result_text(r3));
+
+    CatalogResult r4 = session.add_to_cart(7, 99);
+    draw_error("99 x Ventoline refusees — " + catalog_result_text(r4));
+
+    CatalogResult r5 = session.add_to_cart(4, 1);
+    draw_success("1 x Aerius ajoute — " + catalog_result_text(r5));
+    printf("\n");
+
+    /* 8. panier */
+    screen_cart(session);
+    printf("\n");
+
+    /* 9. validation */
+    render_header(session);
+    printf("  %s\n\n", emphasized("Validation de la commande", Color.BRIGHT_WHITE).data());
+    int before = session.pharmacy.find_by_id(1).stock;
+    CatalogResult checkout = session.checkout();
+    int after = session.pharmacy.find_by_id(1).stock;
+    draw_success(catalog_result_text(checkout));
+    draw_info(f"Stock Doliprane : {before} -> {after} (2 unites deduites)");
+    printf("\n");
+
+    /* 10. persistance -- sous-projet `storage` */
+    printf("  %s\n\n", emphasized("Persistance du catalogue", Color.BRIGHT_WHITE).data());
+    StorageResult saved = session.store.save(session.pharmacy);
+    draw_success(storage_result_text(saved) + " -> " + catalog_path());
+
+    /* relecture dans une officine neuve pour prouver l'aller-retour */
+    Pharmacy* reloaded = new Pharmacy("Verification", "—", 32);
+    CatalogStore* reader = new CatalogStore(catalog_path());
+    StorageResult loaded = reader.load(reloaded);
+    if (loaded == StorageResult.SUCCESS) {
+        draw_success(f"Relecture : {reloaded.size()} fiches restaurees");
+        Medicine* check = reloaded.find_by_id(1);
+        if (check != null) {
+            draw_info("Doliprane relu — stock " + f"{check.stock}"
+                      + ", prix " + check.price_text() + " €");
+        }
+        /* la recherche fonctionne aussi sur le catalogue recharge */
+        array<SearchHit, 4> hits;
+        int found = reloaded.search("fievre", &hits[0], 4);
+        draw_info(f"Recherche 'fievre' sur le catalogue recharge : {found} resultat(s)");
+    }
+    else { draw_error(storage_result_text(loaded)); }
+    printf("\n");
+
+    /* 11. synthese */
+    int width = screen_width();
+    draw_top(width, "Sous-projets exerces", BorderStyle.DOUBLE, Color.BRIGHT_MAGENTA);
+    draw_row(colored("search  ", Color.CYAN) + "SearchIndex, tolerance aux fautes, scoring",
+             width, BorderStyle.DOUBLE, Color.BRIGHT_MAGENTA);
+    draw_row(colored("catalog ", Color.CYAN) + "Medicine, Pharmacy, regles de delivrance, panier",
+             width, BorderStyle.DOUBLE, Color.BRIGHT_MAGENTA);
+    draw_row(colored("display ", Color.CYAN) + "termios, couleurs ANSI, cadres, jauges",
+             width, BorderStyle.DOUBLE, Color.BRIGHT_MAGENTA);
+    draw_row(colored("storage ", Color.CYAN) + "serialisation, aller-retour disque",
+             width, BorderStyle.DOUBLE, Color.BRIGHT_MAGENTA);
+    draw_bottom(width, BorderStyle.DOUBLE, Color.BRIGHT_MAGENTA);
+}
+
+/* ================================================================
+ * Boucle interactive
+ * ================================================================ */
+
+/* lit une ligne au clavier en mode brut, avec echo manuel et
+   gestion du retour arriere */
+str read_line(Session* session, str prompt) {
+    printf("  %s ", colored(prompt, Color.BRIGHT_YELLOW).data());
+    str buffer = "";
+    bool reading = true;
+    while (reading) {
+        Key key = session.terminal.read_key();
+        int code = cast<int>(key);
+        if (key == Key.ENTER) { reading = false; }
+        else if (key == Key.BACKSPACE) {
+            if (buffer.len() > 0) {
+                buffer = buffer.slice(0, buffer.len() - 1);
+                printf("\b \b");
+            }
+        }
+        else if (key == Key.ESCAPE) { return ""; }
+        else if (code >= 32 && code < 127) {
+            str c = ascii_char(code);
+            buffer = buffer + c;
+            printf("%s", c.data());
+        }
+    }
+    printf("\n");
+    return buffer;
+}
+
+void run_interactive(Session* session) {
+    while (session.running) {
+        render_header(session);
+        render_menu();
+        printf("\n");
+        printf("  %s ", colored("Choix >", Color.BRIGHT_YELLOW).data());
+
+        Key key = session.terminal.read_key();
+        int code = cast<int>(key);
+        printf("\n");
+
+        if (code == 113) { session.running = false; }        /* q */
+        else if (code == 49) {                                /* 1 */
+            str term = read_line(session, "Rechercher >");
+            if (term.len() > 0) {
+                screen_search(session, term);
+                printf("\n  %s", colored("Entree pour continuer...", Color.GRAY).data());
+                session.terminal.read_key();
+            }
+        }
+        else if (code == 51) {                                /* 3 */
+            screen_cart(session);
+            printf("\n  %s", colored("Entree pour continuer...", Color.GRAY).data());
+            session.terminal.read_key();
+        }
+        else if (code == 52) {                                /* 4 */
+            session.has_prescription = !session.has_prescription;
+        }
+        else if (code == 53) {                                /* 5 */
+            CatalogResult result = session.checkout();
+            render_header(session);
+            if (result == CatalogResult.SUCCESS) { draw_success(catalog_result_text(result)); }
+            else { draw_error(catalog_result_text(result)); }
+            printf("\n  %s", colored("Entree pour continuer...", Color.GRAY).data());
+            session.terminal.read_key();
+        }
+        else if (code == 54) {                                /* 6 */
+            StorageResult result = session.store.save(session.pharmacy);
+            render_header(session);
+            draw_success(storage_result_text(result));
+            printf("\n  %s", colored("Entree pour continuer...", Color.GRAY).data());
+            session.terminal.read_key();
+        }
+    }
+}
+
+/* ================================================================
+ * Point d'entree
+ * ================================================================ */
+int main() {
+    /* --- assemblage des sous-projets --- */
+    Pharmacy* pharmacy = new Pharmacy("Pharmacie du Ponant", "Brest", 32);
+    CatalogStore* store = new CatalogStore(catalog_path());
+    Terminal* terminal = new Terminal();
+
+    /* --- catalogue : recharge depuis le disque, ou amorcage --- */
+    if (store.exists()) {
+        StorageResult loaded = store.load(pharmacy);
+        if (loaded != StorageResult.SUCCESS) { seed_catalog(pharmacy); }
+    }
+    else { seed_catalog(pharmacy); }
+
+    Session* session = new Session(pharmacy, store, terminal);
+
+    /* --- mode interactif si l'entree est un terminal --- */
+    if (terminal.is_terminal()) {
+        if (terminal.enter_raw() == TerminalResult.SUCCESS) {
+            hide_cursor();
+            run_interactive(session);
+            show_cursor();
+            terminal.restore();      /* indispensable : sans quoi le
+                                        terminal reste muet apres la sortie */
+            clear_screen();
+            printf("%s\n", emphasized("Merci de votre visite.", Color.BRIGHT_CYAN).data());
+            return 0;
+        }
+    }
+
+    /* --- sinon : demonstration scriptee --- */
+    run_demo(session);
+    return 0;
+}

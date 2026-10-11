@@ -1,0 +1,24 @@
+# ================================================================
+# Sous-projet : search — structure de donnees de recherche
+# ================================================================
+# Aucune dependance : c'est une brique de base, compilee en premier.
+# exports rend search.mabc visible par tout projet qui declare ce
+# sous-projet dans [subprojects].
+# ================================================================
+
+[project]
+name        = "search"
+version     = "1.0.0"
+description = "Index inverse avec recherche exacte, prefixe, sous-chaine et tolerante aux fautes"
+entry       = "search.mabc"
+exports     = ["search.mabc"]
+
+[imports]
+libs = ["std"]
+
+[backend]
+llvm = true
+
+[build]
+type   = "static"
+# output non declare : va dans build/ (voir [build] dir)

@@ -1,0 +1,29 @@
+# ================================================================
+# Sous-projet : display — rendu terminal
+# ================================================================
+# Deux modules exportes :
+#   terminal.mabc : wrapper termios (mode brut, lecture de touches)
+#   display.mabc  : couleurs ANSI, cadres, composants
+# Aucune dependance envers les autres sous-projets : l'affichage ne
+# connait rien du metier, c'est le projet principal qui les assemble.
+# ================================================================
+
+[project]
+name        = "display"
+version     = "1.0.0"
+description = "Wrapper termios et rendu terminal (couleurs, cadres, composants)"
+entry       = "display.mabc"
+exports     = ["terminal.mabc", "display.mabc"]
+
+[sources]
+files = ["terminal.mabc"]
+
+[imports]
+libs = ["std", "termios", "unistd", "terminal"]
+
+[backend]
+llvm = true
+
+[build]
+type   = "static"
+# output non declare : va dans build/

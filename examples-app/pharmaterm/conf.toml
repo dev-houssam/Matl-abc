@@ -1,0 +1,42 @@
+# ================================================================
+# PharmaTerm — plateforme d'achat et de conseil en pharmacie
+# ================================================================
+# Projet principal. Il n'implemente aucune brique technique : les
+# quatre sous-projets fournissent tout, et [subprojects] les compile
+# en profondeur en remontant, dans l'ordre impose par leurs depends :
+#
+#   search   (aucune dependance)          -> 1er
+#   catalog  (depends = ["search"])       -> 2e
+#   storage  (depends = ["catalog"])      -> 3e
+#   display  (aucune dependance)          -> 4e
+#   pharmaterm (racine)                   -> 5e
+#
+# Chaque sous-projet expose ses modules via [project] exports : le
+# compilateur les fusionne automatiquement dans ce programme. C'est ce
+# qui rend l'arbre utile -- sans exports, les sous-projets seraient
+# compiles puis inutilisables ici.
+# ================================================================
+
+[project]
+name        = "pharmaterm"
+version     = "1.0.0"
+description = "Plateforme terminal d'achat de medicaments et de conseil pharmaceutique"
+entry       = "main.mabc"
+
+[subprojects]
+paths = ["libs/search", "libs/catalog", "libs/storage", "libs/display"]
+
+# Le wrapper file de la stdlib, utilise par storage, doit aussi etre
+# visible ici : les modules exportes par storage s'y referent.
+[sources]
+files = ["libs/storage/vendor/file.mabc"]
+
+[imports]
+libs = ["std", "unistd", "fcntl", "stat", "termios", "search", "catalog", "storage", "display", "file", "terminal"]
+
+[backend]
+llvm = true
+
+[build]
+optimize = true
+# output non declare : va dans build/pharmaterm

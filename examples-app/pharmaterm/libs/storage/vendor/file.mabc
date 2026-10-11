@@ -1,0 +1,140 @@
+/* ================================================================
+ * file.mabc — Bibliotheque wrapper MATL-ABC pour les fichiers POSIX
+ * ================================================================
+ * Enveloppe cunistd / cfcntl / cstat dans une API IDIOMATIQUE :
+ *   - enums typees au lieu des flags/modes octaux nus (577, 420...)
+ *   - struct File avec methodes (open/read/write/close)
+ *   - permissions lisibles au lieu de chmod(path, 420)
+ *
+ * Convention : identifiants en ANGLAIS, commentaires en FRANCAIS.
+ *
+ * Comparaison :
+ *   AVANT : int fd = open(path.data(), 577);  chmod(path, 420);
+ *   APRES : File* f = new File(path, OpenMode.WRITE);
+ *           set_permissions(path, Permission.OWNER_READ_WRITE);
+ * ================================================================ */
+
+import <std>
+import <unistd>
+import <fcntl>
+import <stat>
+
+/* ---- Mode d'ouverture (combinaisons O_* usuelles) ---- */
+enum OpenMode {
+    READ       = 0,     /* O_RDONLY */
+    WRITE      = 577,   /* O_WRONLY|O_CREAT|O_TRUNC (1|64|512) */
+    APPEND     = 1089,  /* O_WRONLY|O_CREAT|O_APPEND (1|64|1024) */
+    READ_WRITE = 578    /* O_RDWR|O_CREAT|O_TRUNC (2|64|512) */
+}
+
+/* ---- Permissions octales Unix, nommees ---- */
+enum Permission {
+    OWNER_ONLY       = 384,  /* 0600 rw------- */
+    OWNER_READ_WRITE = 420,  /* 0644 rw-r--r-- */
+    EXECUTABLE       = 493,  /* 0755 rwxr-xr-x */
+    ALL_RIGHTS       = 511,  /* 0777 rwxrwxrwx */
+    READ_ONLY        = 292   /* 0444 r--r--r-- */
+}
+
+/* ---- Test d'acces (F_OK, R_OK, W_OK, X_OK) ---- */
+enum AccessTest {
+    EXISTS     = 0,   /* F_OK */
+    READABLE   = 4,   /* R_OK */
+    WRITABLE   = 2,   /* W_OK */
+    RUNNABLE   = 1    /* X_OK */
+}
+
+/* ---- Origine d'un deplacement (SEEK_*) ---- */
+enum SeekOrigin {
+    START   = 0,   /* SEEK_SET */
+    CURRENT = 1,   /* SEEK_CUR */
+    END     = 2    /* SEEK_END */
+}
+
+enum FileResult {
+    SUCCESS = 0,
+    FAILURE = -1
+}
+
+/* ================================================================
+ * File — descripteur enveloppe avec methodes typees
+ * ================================================================ */
+struct File {
+    int fd;
+    str path;
+    bool open;
+
+    /* new File("/tmp/x.txt", OpenMode.WRITE) */
+    void init(str path, OpenMode mode) {
+        self.path = path;
+        self.fd = open(cast<rawptr>(path.data()), cast<int>(mode));
+        self.open = self.fd >= 0;
+    }
+
+    bool is_open() { return self.open && self.fd >= 0; }
+    int descriptor() { return self.fd; }
+
+    /* ecrit une chaine, retourne le nombre d'octets ecrits */
+    int write_text(str content) {
+        if (!self.open) { return -1; }
+        return write(self.fd, cast<rawptr>(content.data()),
+                     cast<usize>(content.len()));
+    }
+
+    /* ecrit des octets bruts */
+    int write_bytes(byte* data, int n) {
+        if (!self.open) { return -1; }
+        return write(self.fd, cast<rawptr>(data), cast<usize>(n));
+    }
+
+    /* lit jusqu'a max octets dans le tampon, retourne le nombre lu */
+    int read_bytes(byte* buffer, int max) {
+        if (!self.open) { return -1; }
+        return read(self.fd, cast<rawptr>(buffer), max);
+    }
+
+    /* se positionne dans le fichier */
+    i64 seek_to(i64 position, SeekOrigin origin) {
+        return lseek(self.fd, position, cast<int>(origin));
+    }
+
+    /* taille totale : va a la fin, releve, revient au debut */
+    i64 size() {
+        i64 end = lseek(self.fd, 0i64, cast<int>(SeekOrigin.END));
+        lseek(self.fd, 0i64, cast<int>(SeekOrigin.START));
+        return end;
+    }
+
+    void close_file() {
+        if (self.open) { close(self.fd); self.open = false; }
+    }
+}
+
+/* ================================================================
+ * Operations sur les chemins (sans ouvrir le fichier)
+ * ================================================================ */
+
+/* chmod idiomatique : set_permissions("/tmp/x", Permission.EXECUTABLE) */
+FileResult set_permissions(str path, Permission perm) {
+    int r = chmod(cast<rawptr>(path.data()), cast<int>(perm));
+    return r == 0 ? FileResult.SUCCESS : FileResult.FAILURE;
+}
+
+/* test d'acces : can_access(path, AccessTest.READABLE) */
+bool can_access(str path, AccessTest test) {
+    return access(cast<rawptr>(path.data()), cast<int>(test)) == 0;
+}
+
+/* file_exists(path) : raccourci lisible */
+bool file_exists(str path) {
+    return can_access(path, AccessTest.EXISTS);
+}
+
+/* ecrit un fichier complet en un appel */
+int write_file(str path, str content) {
+    File* f = new File(path, OpenMode.WRITE);
+    if (!f.is_open()) { return -1; }
+    int n = f.write_text(content);
+    f.close_file();
+    return n;
+}

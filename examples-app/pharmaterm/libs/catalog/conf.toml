@@ -1,0 +1,30 @@
+# ================================================================
+# Sous-projet : catalog — modele metier (medicaments, pharmacie)
+# ================================================================
+# DEPEND de search : Pharmacy maintient un SearchIndex sur son
+# catalogue. Le tri topologique garantit que search est compile avant.
+# Comme catalog utilise les TYPES de search, il declare search.mabc
+# dans [sources] : c'est la contrepartie du depends au niveau du code.
+# ================================================================
+
+[project]
+name        = "catalog"
+version     = "1.0.0"
+description = "Medicaments, pharmacie, panier et regles de delivrance"
+entry       = "catalog.mabc"
+depends     = ["search"]
+exports     = ["catalog.mabc"]
+
+# catalog compile contre les types de search
+[sources]
+files = ["../search/search.mabc"]
+
+[imports]
+libs = ["std", "search"]
+
+[backend]
+llvm = true
+
+[build]
+type   = "static"
+# output non declare : va dans build/

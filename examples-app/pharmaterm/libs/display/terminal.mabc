@@ -1,0 +1,165 @@
+/* ================================================================
+ * terminal.mabc — Bibliotheque wrapper MATL-ABC pour termios
+ * ================================================================
+ * Enveloppe ctermios / cunistd dans une API idiomatique :
+ *   - enums typees au lieu des constantes octales de termios.h
+ *   - struct Terminal qui sauvegarde/restaure l'etat automatiquement
+ *   - lecture de touches sans echo ni attente de Entree (mode brut)
+ *
+ * struct termios fait ~60 octets et n'est pas expose par MATL-ABC :
+ * on le manipule comme un bloc d'octets opaque (char*), en ne touchant
+ * qu'aux champs dont on connait l'offset sur Linux x86_64 :
+ *
+ *   offset  0 : c_iflag   (4 octets)
+ *   offset  4 : c_oflag   (4 octets)
+ *   offset  8 : c_cflag   (4 octets)
+ *   offset 12 : c_lflag   (4 octets)   <- ECHO et ICANON sont ici
+ *   offset 17 : c_cc[VMIN]  (1 octet)
+ *   offset 16 : c_cc[VTIME] (1 octet)
+ *
+ * Convention : identifiants en ANGLAIS, commentaires en FRANCAIS.
+ * ================================================================ */
+
+import <std>
+import <termios>
+import <unistd>
+
+/* ---- Descripteurs standards ---- */
+enum StdStream {
+    INPUT  = 0,   /* STDIN_FILENO */
+    OUTPUT = 1,   /* STDOUT_FILENO */
+    ERROR  = 2    /* STDERR_FILENO */
+}
+
+/* ---- Moment d'application d'un changement (TCSA*) ---- */
+enum ApplyMode {
+    NOW      = 0,   /* TCSANOW   : immediat */
+    ON_DRAIN = 1,   /* TCSADRAIN : apres vidage de la sortie */
+    ON_FLUSH = 2    /* TCSAFLUSH : apres vidage entree + sortie */
+}
+
+/* ---- Drapeaux locaux (c_lflag) que l'on manipule ---- */
+enum LocalFlag {
+    ECHO_INPUT     = 8,    /* ECHO   : reafficher les touches frappees */
+    CANONICAL_MODE = 2,    /* ICANON : lecture ligne par ligne */
+    SIGNAL_KEYS    = 1     /* ISIG   : Ctrl-C / Ctrl-Z generent des signaux */
+}
+
+enum TerminalResult {
+    SUCCESS = 0,
+    FAILURE = -1
+}
+
+/* ---- Touches reconnues par read_key() ---- */
+enum Key {
+    NONE       = 0,
+    ENTER      = 10,
+    ESCAPE     = 27,
+    BACKSPACE  = 127,
+    ARROW_UP   = 1001,
+    ARROW_DOWN = 1002,
+    ARROW_RIGHT= 1003,
+    ARROW_LEFT = 1004
+}
+
+/* ================================================================
+ * Terminal — mode brut avec restauration garantie
+ * ================================================================ */
+struct Terminal {
+    byte* saved_state;    /* copie de l'etat initial, pour restauration */
+    byte* work_state;     /* etat de travail */
+    bool raw_active;
+    bool available;       /* faux si stdin n'est pas un terminal */
+
+    void init() {
+        /* 64 octets : struct termios en fait ~60 sur Linux x86_64 */
+        self.saved_state = alloc<byte>(64);
+        self.work_state = alloc<byte>(64);
+        self.raw_active = false;
+        /* tcgetattr echoue si stdin est un pipe : on le detecte ici */
+        int r = tcgetattr(cast<int>(StdStream.INPUT),
+                          cast<char*>(self.saved_state));
+        self.available = r == 0;
+    }
+
+    bool is_terminal() { return self.available; }
+
+    /* lit un entier 32 bits little-endian dans le bloc termios */
+    int read_flag(byte* state, int offset) {
+        return cast<int>(state[offset])
+             | (cast<int>(state[offset + 1]) << 8)
+             | (cast<int>(state[offset + 2]) << 16)
+             | (cast<int>(state[offset + 3]) << 24);
+    }
+
+    /* ecrit un entier 32 bits little-endian dans le bloc termios */
+    void write_flag(byte* state, int offset, int value) {
+        state[offset]     = cast<byte>(value & 255);
+        state[offset + 1] = cast<byte>((value >> 8) & 255);
+        state[offset + 2] = cast<byte>((value >> 16) & 255);
+        state[offset + 3] = cast<byte>((value >> 24) & 255);
+    }
+
+    /* passe en mode brut : ni echo, ni attente de Entree.
+       L'etat initial est conserve pour restore(). */
+    TerminalResult enter_raw() {
+        if (!self.available) { return TerminalResult.FAILURE; }
+        /* repartir de l'etat sauvegarde */
+        for i in range(64) { self.work_state[i] = self.saved_state[i]; }
+        /* c_lflag est a l'offset 12 : retirer ECHO et ICANON */
+        int lflag = self.read_flag(self.work_state, 12);
+        lflag = lflag & ~cast<int>(LocalFlag.ECHO_INPUT);
+        lflag = lflag & ~cast<int>(LocalFlag.CANONICAL_MODE);
+        self.write_flag(self.work_state, 12, lflag);
+        /* VMIN = 1, VTIME = 0 : read() bloque jusqu'a un octet */
+        self.work_state[17] = cast<byte>(1);
+        self.work_state[16] = cast<byte>(0);
+        int r = tcsetattr(cast<int>(StdStream.INPUT),
+                          cast<int>(ApplyMode.ON_FLUSH),
+                          cast<char*>(self.work_state));
+        if (r != 0) { return TerminalResult.FAILURE; }
+        self.raw_active = true;
+        return TerminalResult.SUCCESS;
+    }
+
+    /* restaure l'etat initial ; sans appel, le terminal reste muet
+       apres la sortie du programme */
+    TerminalResult restore() {
+        if (!self.available || !self.raw_active) { return TerminalResult.SUCCESS; }
+        int r = tcsetattr(cast<int>(StdStream.INPUT),
+                          cast<int>(ApplyMode.ON_FLUSH),
+                          cast<char*>(self.saved_state));
+        self.raw_active = false;
+        return r == 0 ? TerminalResult.SUCCESS : TerminalResult.FAILURE;
+    }
+
+    /* lit une touche. Les fleches emettent une sequence d'echappement
+       de 3 octets (ESC [ A) : on la decode en une valeur unique. */
+    Key read_key() {
+        byte* buffer = alloc<byte>(4);
+        int n = read(cast<int>(StdStream.INPUT), cast<rawptr>(buffer), 1);
+        if (n <= 0) { return Key.NONE; }
+        int code = cast<int>(buffer[0]);
+
+        if (code == 27) {
+            /* sequence d'echappement possible */
+            int n2 = read(cast<int>(StdStream.INPUT), cast<rawptr>(buffer), 1);
+            if (n2 <= 0) { return Key.ESCAPE; }
+            if (cast<int>(buffer[0]) != 91) { return Key.ESCAPE; }  /* pas un '[' */
+            int n3 = read(cast<int>(StdStream.INPUT), cast<rawptr>(buffer), 1);
+            if (n3 <= 0) { return Key.ESCAPE; }
+            int arrow = cast<int>(buffer[0]);
+            if (arrow == 65) { return Key.ARROW_UP; }
+            if (arrow == 66) { return Key.ARROW_DOWN; }
+            if (arrow == 67) { return Key.ARROW_RIGHT; }
+            if (arrow == 68) { return Key.ARROW_LEFT; }
+            return Key.ESCAPE;
+        }
+        if (code == 10 || code == 13) { return Key.ENTER; }
+        if (code == 127 || code == 8) { return Key.BACKSPACE; }
+        /* caractere imprimable : on retourne son code ASCII tel quel */
+        return cast<Key>(code);
+    }
+}
+
+int terminal_module_main() { return 0; }

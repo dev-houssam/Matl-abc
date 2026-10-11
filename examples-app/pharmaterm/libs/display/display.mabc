@@ -1,0 +1,312 @@
+/* ================================================================
+ * display.mabc — Rendu terminal : couleurs, cadres, composants
+ * ================================================================
+ * S'appuie sur le wrapper `terminal` (termios) pour le mode brut, et
+ * fournit au-dessus une couche de rendu : sequences ANSI nommees,
+ * cadres Unicode, barres de progression, tableaux alignes.
+ *
+ * Toutes les sequences ANSI passent par des enums : aucun code
+ * d'echappement magique ne traine dans le code appelant.
+ *
+ * Convention : identifiants en ANGLAIS, commentaires en FRANCAIS.
+ * ================================================================ */
+
+import <std>
+
+/* display s'appuie sur le wrapper termios de ce meme sous-projet */
+import <terminal>
+
+/* ---- Couleurs de premier plan (codes SGR) ---- */
+enum Color {
+    DEFAULT   = 39,
+    BLACK     = 30,
+    RED       = 31,
+    GREEN     = 32,
+    YELLOW    = 33,
+    BLUE      = 34,
+    MAGENTA   = 35,
+    CYAN      = 36,
+    WHITE     = 37,
+    GRAY      = 90,
+    BRIGHT_RED    = 91,
+    BRIGHT_GREEN  = 92,
+    BRIGHT_YELLOW = 93,
+    BRIGHT_BLUE   = 94,
+    BRIGHT_CYAN   = 96,
+    BRIGHT_WHITE  = 97
+}
+
+/* ---- Couleurs de fond ---- */
+enum Background {
+    BG_DEFAULT = 49,
+    BG_BLACK   = 40,
+    BG_RED     = 41,
+    BG_GREEN   = 42,
+    BG_YELLOW  = 43,
+    BG_BLUE    = 44,
+    BG_CYAN    = 46,
+    BG_WHITE   = 47,
+    BG_GRAY    = 100
+}
+
+/* ---- Attributs de style ---- */
+enum Style {
+    RESET     = 0,
+    BOLD      = 1,
+    DIM       = 2,
+    ITALIC    = 3,
+    UNDERLINE = 4,
+    REVERSE   = 7
+}
+
+/* ---- Style de cadre ---- */
+enum BorderStyle {
+    SINGLE = 0,   /* ┌─┐ */
+    DOUBLE = 1,   /* ╔═╗ */
+    ROUND  = 2,   /* ╭─╮ */
+    HEAVY  = 3    /* ┏━┓ */
+}
+
+/* ---- Alignement dans une cellule ---- */
+enum Align {
+    LEFT   = 0,
+    CENTER = 1,
+    RIGHT  = 2
+}
+
+/* ================================================================
+ * Sequences ANSI
+ * ================================================================ */
+
+/* applique une couleur de texte */
+str colored(str text, Color color) {
+    int code = cast<int>(color);
+    return f"\x1b[{code}m{text}\x1b[0m";
+}
+
+/* applique un style */
+str styled(str text, Style style) {
+    int code = cast<int>(style);
+    return f"\x1b[{code}m{text}\x1b[0m";
+}
+
+/* couleur + gras, le combo le plus courant pour les titres */
+str emphasized(str text, Color color) {
+    int code = cast<int>(color);
+    return f"\x1b[1;{code}m{text}\x1b[0m";
+}
+
+/* texte sur fond colore : utilise pour la ligne selectionnee */
+str highlighted(str text, Color color, Background background) {
+    int fg = cast<int>(color);
+    int bg = cast<int>(background);
+    return f"\x1b[{fg};{bg}m{text}\x1b[0m";
+}
+
+void clear_screen() { printf("\x1b[2J\x1b[H"); }
+void move_cursor(int row, int column) { printf("\x1b[%d;%dH", row, column); }
+void hide_cursor() { printf("\x1b[?25l"); }
+void show_cursor() { printf("\x1b[?25h"); }
+void clear_line() { printf("\x1b[2K\r"); }
+
+/* ================================================================
+ * Mesure de largeur
+ * ================================================================ */
+
+/* Largeur d'affichage d'une chaine, en colonnes.
+   Deux corrections indispensables :
+   - les sequences ANSI (\x1b[...m) n'occupent aucune colonne ;
+   - les caracteres UTF-8 multi-octets comptent pour une seule colonne
+     alors que len() compte les OCTETS. */
+int display_width(str text) {
+    int width = 0;
+    int i = 0;
+    int n = text.len();
+    bool in_escape = false;
+    while (i < n) {
+        str c = text.slice(i, i + 1);
+        if (c == "\x1b") { in_escape = true; i = i + 1; continue; }
+        if (in_escape) {
+            /* la sequence se termine par une lettre */
+            if ((c >= "a" && c <= "z") || (c >= "A" && c <= "Z")) {
+                in_escape = false;
+            }
+            i = i + 1;
+            continue;
+        }
+        /* & 255 INDISPENSABLE : data() retourne un char* SIGNE, donc
+           l'octet 0xE2 (226) d'un caractere UTF-8 vaudrait -30 et serait
+           pris pour de l'ASCII -- toute la mesure de largeur fausse. */
+        int byte_value = cast<int>(c.data()[0]) & 255;
+        /* octet de tete UTF-8 : 0xxxxxxx (1), 110xxxxx (2), 1110xxxx (3) */
+        if (byte_value < 128)      { width = width + 1; i = i + 1; }
+        else if (byte_value < 224) { width = width + 1; i = i + 2; }
+        else if (byte_value < 240) { width = width + 1; i = i + 3; }
+        else                       { width = width + 1; i = i + 4; }
+    }
+    return width;
+}
+
+/* repete un motif n fois */
+str repeat(str pattern, int times) {
+    str result = "";
+    for i in range(times) { result = result + pattern; }
+    return result;
+}
+
+/* complete une chaine a la largeur voulue selon l'alignement */
+str pad(str text, int width, Align align) {
+    int current = display_width(text);
+    if (current >= width) { return text; }
+    int missing = width - current;
+    match (align) {
+        Align.LEFT   => { return text + repeat(" ", missing); }
+        Align.RIGHT  => { return repeat(" ", missing) + text; }
+        Align.CENTER => {
+            int left = missing / 2;
+            int right = missing - left;
+            return repeat(" ", left) + text + repeat(" ", right);
+        }
+    }
+    return text;
+}
+
+/* tronque proprement en ajoutant une ellipse */
+str shorten(str text, int width) {
+    if (display_width(text) <= width) { return text; }
+    if (width <= 1) { return "…"; }
+    /* on coupe sur les octets mais on vise la largeur d'affichage */
+    str result = "";
+    int i = 0;
+    int n = text.len();
+    while (i < n && display_width(result) < width - 1) {
+        int byte_value = cast<int>(text.slice(i, i + 1).data()[0]) & 255;
+        int step = 1;
+        if (byte_value >= 240)      { step = 4; }
+        else if (byte_value >= 224) { step = 3; }
+        else if (byte_value >= 192) { step = 2; }
+        if (i + step > n) { step = n - i; }
+        result = result + text.slice(i, i + step);
+        i = i + step;
+    }
+    return result + "…";
+}
+
+/* ================================================================
+ * Cadres
+ * ================================================================ */
+
+/* retourne les 6 glyphes d'un style de cadre, dans l'ordre :
+   coin haut-gauche, horizontal, coin haut-droit,
+   vertical, coin bas-gauche, coin bas-droit */
+str border_glyph(BorderStyle style, int position) {
+    match (style) {
+        BorderStyle.SINGLE => {
+            if (position == 0) { return "┌"; }  if (position == 1) { return "─"; }
+            if (position == 2) { return "┐"; }  if (position == 3) { return "│"; }
+            if (position == 4) { return "└"; }  return "┘";
+        }
+        BorderStyle.DOUBLE => {
+            if (position == 0) { return "╔"; }  if (position == 1) { return "═"; }
+            if (position == 2) { return "╗"; }  if (position == 3) { return "║"; }
+            if (position == 4) { return "╚"; }  return "╝";
+        }
+        BorderStyle.ROUND => {
+            if (position == 0) { return "╭"; }  if (position == 1) { return "─"; }
+            if (position == 2) { return "╮"; }  if (position == 3) { return "│"; }
+            if (position == 4) { return "╰"; }  return "╯";
+        }
+        BorderStyle.HEAVY => {
+            if (position == 0) { return "┏"; }  if (position == 1) { return "━"; }
+            if (position == 2) { return "┓"; }  if (position == 3) { return "┃"; }
+            if (position == 4) { return "┗"; }  return "┛";
+        }
+    }
+    return " ";
+}
+
+/* trace la ligne du haut d'un cadre, avec un titre optionnel */
+void draw_top(int width, str title, BorderStyle style, Color color) {
+    str corner_left = border_glyph(style, 0);
+    str horizontal = border_glyph(style, 1);
+    str corner_right = border_glyph(style, 2);
+    if (title.len() == 0) {
+        str line = corner_left + repeat(horizontal, width - 2) + corner_right;
+        printf("%s\n", colored(line, color).data());
+        return;
+    }
+    int title_width = display_width(title) + 2;
+    int remaining = width - 2 - title_width - 1;
+    if (remaining < 0) { remaining = 0; }
+    str line = corner_left + horizontal + " " + title + " "
+             + repeat(horizontal, remaining) + corner_right;
+    printf("%s\n", colored(line, color).data());
+}
+
+/* trace la ligne du bas */
+void draw_bottom(int width, BorderStyle style, Color color) {
+    str line = border_glyph(style, 4)
+             + repeat(border_glyph(style, 1), width - 2)
+             + border_glyph(style, 5);
+    printf("%s\n", colored(line, color).data());
+}
+
+/* trace une ligne de contenu encadree */
+void draw_row(str content, int width, BorderStyle style, Color color) {
+    str vertical = colored(border_glyph(style, 3), color);
+    str inner = pad(content, width - 4, Align.LEFT);
+    printf("%s %s %s\n", vertical.data(), inner.data(), vertical.data());
+}
+
+/* trace un separateur interne */
+void draw_separator(int width, BorderStyle style, Color color) {
+    str line = border_glyph(style, 3)
+             + repeat(border_glyph(style, 1), width - 2)
+             + border_glyph(style, 3);
+    printf("%s\n", colored(line, color).data());
+}
+
+/* ================================================================
+ * Composants
+ * ================================================================ */
+
+/* barre de progression : [████████░░░░] 66% */
+str progress_bar(int value, int maximum, int width) {
+    if (maximum <= 0) { return repeat("░", width); }
+    int filled = value * width / maximum;
+    if (filled > width) { filled = width; }
+    if (filled < 0) { filled = 0; }
+    return repeat("█", filled) + repeat("░", width - filled);
+}
+
+/* jauge de stock coloree selon le niveau */
+str stock_gauge(int stock, int width) {
+    str bar = progress_bar(stock, 50, width);
+    if (stock == 0) { return colored(bar, Color.RED); }
+    if (stock < 10) { return colored(bar, Color.YELLOW); }
+    return colored(bar, Color.GREEN);
+}
+
+/* bandeau de titre pleine largeur */
+void draw_banner(str title, str subtitle, int width) {
+    draw_top(width, "", BorderStyle.DOUBLE, Color.BRIGHT_CYAN);
+    draw_row(emphasized(pad(title, width - 4, Align.CENTER), Color.BRIGHT_WHITE),
+             width, BorderStyle.DOUBLE, Color.BRIGHT_CYAN);
+    if (subtitle.len() > 0) {
+        draw_row(colored(pad(subtitle, width - 4, Align.CENTER), Color.GRAY),
+                 width, BorderStyle.DOUBLE, Color.BRIGHT_CYAN);
+    }
+    draw_bottom(width, BorderStyle.DOUBLE, Color.BRIGHT_CYAN);
+}
+
+/* message de statut prefixe d'un symbole */
+void draw_status(str message, Color color, str symbol) {
+    printf("  %s %s\n", colored(symbol, color).data(), message.data());
+}
+
+void draw_success(str message) { draw_status(message, Color.GREEN, "✔"); }
+void draw_error(str message)   { draw_status(message, Color.RED, "✘"); }
+void draw_warning(str message) { draw_status(message, Color.YELLOW, "⚠"); }
+void draw_info(str message)    { draw_status(message, Color.CYAN, "ℹ"); }
+
+int display_module_main() { return 0; }

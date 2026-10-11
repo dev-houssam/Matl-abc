@@ -1,0 +1,158 @@
+import <cstd>
+import <cstring>
+
+/*
+ * Projet XML — version [lib.xml2] + import
+ *
+ * "import <xml2>" charge TOUTES les signatures depuis headers/libxml2.mabh
+ * configuré dans [lib.xml2] du conf.toml.
+ * Les types rawptr<XmlDoc>, rawptr<XmlNode> etc. viennent du .mabh.
+ *
+ * Configuration dans conf.toml :
+ *   [lib.xml2]
+ *   file    = "/usr/lib/x86_64-linux-gnu/libxml2.so"
+ *   headers = "headers/libxml2.mabh"
+ *
+ * Note : xmlFree est un pointeur de fonction dans libxml2 →
+ *        utiliser free() standard à la place.
+ */
+
+import <xml2>
+
+/* ── Types Ada ── */
+type PersonAge = i32 range 0..150;
+
+/* ── Struct Contact ── */
+struct Contact {
+    char[64] nom;
+    char[64] email;
+    char[16] tel;
+    int      age;
+
+    void afficher() {
+        printf("  Nom  : %s\n", &self.nom[0]);
+        printf("  Mail : %s\n", &self.email[0]);
+        printf("  Tel  : %s\n", &self.tel[0]);
+        printf("  Age  : %d\n", self.age);
+    }
+}
+
+void copy_s(char* dst, char* src, int max) {
+    if (cast<long>(src) == 0) { dst[0] = cast<char>(0); return; }
+    int i = 0;
+    while (i < max - 1 && src[i] != cast<char>(0)) { dst[i] = src[i]; i++; }
+    dst[i] = cast<char>(0);
+}
+
+/* Lire un nœud <contact .../> → Contact */
+Contact lire_contact(rawptr<XmlNode> node) {
+    Contact c;
+    c.age = 0;
+    c.nom[0] = cast<char>(0); c.email[0] = cast<char>(0); c.tel[0] = cast<char>(0);
+
+    char* vn = xmlGetProp(node, "nom");
+    char* ve = xmlGetProp(node, "email");
+    char* vt = xmlGetProp(node, "tel");
+    char* va = xmlGetProp(node, "age");
+
+    if (cast<long>(vn) != 0) { copy_s(&c.nom[0],   vn, 64); free(vn); }
+    if (cast<long>(ve) != 0) { copy_s(&c.email[0],  ve, 64); free(ve); }
+    if (cast<long>(vt) != 0) { copy_s(&c.tel[0],    vt, 16); free(vt); }
+    if (cast<long>(va) != 0) { c.age = atoi(va);             free(va); }
+    return c;
+}
+
+/* Écrire un Contact comme nœud XML */
+void ecrire_contact(rawptr<XmlNode> root_nd, rawptr cp) {
+    Contact* c = cast<Contact*>(cp);
+    rawptr<XmlNs> ns = cast<rawptr<XmlNs>>(0);
+    rawptr<XmlNode> nd = xmlNewChild(root_nd, ns, "contact",
+                                     cast<char*>(cast<rawptr>(0)));
+    xmlSetProp(nd, "nom",   &c.nom[0]);
+    xmlSetProp(nd, "email", &c.email[0]);
+    xmlSetProp(nd, "tel",   &c.tel[0]);
+    char[12] s;
+    sprintf(&s[0], "%d", c.age);
+    xmlSetProp(nd, "age", &s[0]);
+}
+
+void add_contact(char* buf, char* nom, char* email, char* tel, char* age) {
+    strcat(buf, "<contact nom=\"");  strcat(buf, nom);
+    strcat(buf, "\" email=\"");      strcat(buf, email);
+    strcat(buf, "\" tel=\"");        strcat(buf, tel);
+    strcat(buf, "\" age=\"");        strcat(buf, age);
+    strcat(buf, "\"/>");
+}
+
+int main() {
+    printf("==============================================\n");
+    printf("  Projet XML — version [lib.xml2] + import  \n");
+    printf("  import <xml2>  (depuis headers/libxml2.mabh)\n");
+    printf("==============================================\n\n");
+
+    xmlInitParser();
+
+    /* Source XML */
+    char[800] src;
+    strcpy(&src[0], "<carnet>");
+    add_contact(&src[0], "Alice Martin", "alice@example.com", "+33612345678", "28");
+    add_contact(&src[0], "Bob Dupont",   "bob@example.com",   "+33698765432", "35");
+    add_contact(&src[0], "Carol Zhang",  "carol@example.com", "+33678901234", "22");
+    strcat(&src[0], "</carnet>");
+
+    int src_len = cast<int>(strlen(&src[0]));
+    printf("XML source : %d bytes\n\n", src_len);
+
+    /* Lecture */
+    printf("--- Lecture ---\n");
+    rawptr<XmlDoc>  doc  = xmlParseMemory(&src[0], src_len);
+    if (cast<long>(doc) == 0) {
+        printf("ERREUR parsing\n"); xmlCleanupParser(); return 1;
+    }
+    rawptr<XmlNode> root = xmlDocGetRootElement(doc);
+    Contact c0; Contact c1; Contact c2;
+    int n = 0;
+    rawptr<XmlNode> nd = xmlFirstElementChild(root);
+    while (cast<long>(nd) != 0) {
+        if (n == 0) c0 = lire_contact(nd);
+        if (n == 1) c1 = lire_contact(nd);
+        if (n == 2) c2 = lire_contact(nd);
+        n++;
+        nd = xmlNextElementSibling(nd);
+    }
+    xmlFreeDoc(doc);
+
+    printf("%d contacts lus :\n\n", n);
+    if (n > 0) { printf("Contact 1:\n"); c0.afficher(); printf("\n"); }
+    if (n > 1) { printf("Contact 2:\n"); c1.afficher(); printf("\n"); }
+    if (n > 2) { printf("Contact 3:\n"); c2.afficher(); printf("\n"); }
+
+    /* Ecriture */
+    printf("--- Ecriture XML ---\n");
+    rawptr<XmlNs>   ns0   = cast<rawptr<XmlNs>>(0);
+    rawptr<XmlDoc>  doc2  = xmlNewDoc("1.0");
+    rawptr<XmlNode> root2 = xmlNewNode(ns0, "carnet");
+    xmlDocSetRootElement(doc2, root2);
+    if (n > 0) ecrire_contact(root2, rawptr(&c0));
+    if (n > 1) ecrire_contact(root2, rawptr(&c1));
+    if (n > 2) ecrire_contact(root2, rawptr(&c2));
+    int bytes = xmlSaveFormatFileEnc("/tmp/carnet_lib.xml", doc2, "UTF-8", 1);
+    printf("Fichier : /tmp/carnet_lib.xml (%d bytes)\n", bytes);
+    xmlFreeDoc(doc2);
+
+    /* Re-lecture */
+    printf("\n--- Re-lecture ---\n");
+    rawptr<XmlDoc>  doc3  = xmlParseFile("/tmp/carnet_lib.xml");
+    if (cast<long>(doc3) != 0) {
+        rawptr<XmlNode> r3  = xmlDocGetRootElement(doc3);
+        int cnt = 0;
+        rawptr<XmlNode> nd3 = xmlFirstElementChild(r3);
+        while (cast<long>(nd3) != 0) { cnt++; nd3 = xmlNextElementSibling(nd3); }
+        printf("%d contacts relus\n", cnt);
+        xmlFreeDoc(doc3);
+    }
+
+    xmlCleanupParser();
+    printf("\n=== Projet XML ([lib.xml2] + import) — SUCCES ! ===\n");
+    return 0;
+}

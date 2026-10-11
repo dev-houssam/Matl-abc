@@ -1,0 +1,24 @@
+[project]
+name = "xml_lib"
+version = "1.0.0"
+entry  = "main.mabc"
+
+[types]
+[dependencies]
+
+[backend]
+blas   = false
+lapack = false
+fft    = false
+llvm   = true
+
+[build]
+optimize     = true
+output       = "/tmp/xml_lib_out"
+strict_types = true
+
+# Lib avec chemin explicite.
+# "import <xml2>" dans le code résout vers headers/libxml2.mabh ci-dessous.
+[lib.xml2]
+file    = "/usr/lib/x86_64-linux-gnu/libxml2.so"
+headers = "headers/libxml2.mabh"

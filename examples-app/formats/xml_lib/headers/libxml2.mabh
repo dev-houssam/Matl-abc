@@ -1,0 +1,57 @@
+/* libxml2.mabh — interface MATL-ABC pour libxml2
+ *
+ * Les types opaques de libxml2 sont représentés par rawptr<NomType>.
+ * Le compilateur traite rawptr<XmlDoc> différemment de rawptr<XmlNode>
+ * mais génère i8* dans les deux cas (identique à niveau LLVM).
+ *
+ * Correspondances C → MATL-ABC :
+ *   xmlDocPtr  (= xmlDoc*)  → rawptr<XmlDoc>
+ *   xmlNodePtr (= xmlNode*) → rawptr<XmlNode>
+ *   xmlAttrPtr (= xmlAttr*) → rawptr<XmlAttr>
+ *   xmlNsPtr   (= xmlNs*)   → rawptr<XmlNs>
+ *   xmlChar*                → char*
+ */
+
+/* Initialisation / nettoyage */
+int  xmlInitParser();
+void xmlCleanupParser();
+
+/* Parsing — retourne un handle XmlDoc opaque */
+rawptr<XmlDoc> xmlParseMemory(char* buffer, int size);
+rawptr<XmlDoc> xmlParseFile(char* filename);
+rawptr<XmlDoc> xmlReadMemory(char* buffer, int size, char* url, char* encoding, int options);
+rawptr<XmlDoc> xmlReadFile(char* filename, char* encoding, int options);
+void           xmlFreeDoc(rawptr<XmlDoc> doc);
+
+/* Navigation — retourne des handles XmlNode opaques */
+rawptr<XmlNode> xmlDocGetRootElement(rawptr<XmlDoc> doc);
+rawptr<XmlNode> xmlFirstElementChild(rawptr<XmlNode> node);
+rawptr<XmlNode> xmlNextElementSibling(rawptr<XmlNode> node);
+rawptr<XmlNode> xmlPreviousElementSibling(rawptr<XmlNode> node);
+
+/* Lecture des attributs et contenu */
+char*           xmlGetProp(rawptr<XmlNode> node, char* name);
+char*           xmlNodeGetContent(rawptr<XmlNode> node);
+char*           xmlGetNodePath(rawptr<XmlNode> node);
+
+/* Création de document */
+rawptr<XmlDoc>  xmlNewDoc(char* version);
+rawptr<XmlNode> xmlNewNode(rawptr<XmlNs> ns, char* name);
+rawptr<XmlNode> xmlDocSetRootElement(rawptr<XmlDoc> doc, rawptr<XmlNode> root);
+rawptr<XmlNode> xmlNewChild(rawptr<XmlNode> parent, rawptr<XmlNs> ns, char* name, char* content);
+rawptr<XmlAttr> xmlSetProp(rawptr<XmlNode> node, char* name, char* value);
+rawptr<XmlNode> xmlNewTextChild(rawptr<XmlNode> parent, rawptr<XmlNs> ns, char* name, char* content);
+
+/* Sérialisation */
+int  xmlSaveFormatFileEnc(char* filename, rawptr<XmlDoc> doc, char* encoding, int format);
+int  xmlDocDumpMemory(rawptr<XmlDoc> doc, rawptr mem, rawptr size);
+
+/* XPath */
+rawptr<XmlXPathContext> xmlXPathNewContext(rawptr<XmlDoc> doc);
+rawptr<XmlXPathObject>  xmlXPathEvalExpression(char* xpath, rawptr<XmlXPathContext> ctx);
+void                    xmlXPathFreeContext(rawptr<XmlXPathContext> ctx);
+void                    xmlXPathFreeObject(rawptr<XmlXPathObject> obj);
+
+/* Utilitaires */
+int   xmlStrcmp(char* s1, char* s2);
+char* xmlGetVersion();

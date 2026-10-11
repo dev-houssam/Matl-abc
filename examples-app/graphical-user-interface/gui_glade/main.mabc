@@ -1,0 +1,54 @@
+/* ===========================================================
+ * UI definie dans un fichier .glade — chargee par GtkBuilder
+ * ===========================================================
+ * Contrairement a gui_gtk3/main.mabc (widgets crees EN CODE), toute
+ * l'interface (fenetre, boite, label, bouton, textes, dimensions...)
+ * vit dans ui/window.glade -- un fichier XML que Glade (l'outil de
+ * conception visuelle GTK) sait produire par glisser-deposer, et que
+ * GtkBuilder sait CHARGER et INSTANCIER a l'execution. main.mabc ne
+ * fait plus que charger ce fichier et recuperer les objets nommes --
+ * separation nette DONNEES D'UI (fichier) / CODE (logique).
+ * =========================================================== */
+
+import <cstd>
+import <gtk3>
+import <gladebuilder>
+
+int main(int argc, char** argv) {
+    printf("=== UI depuis un fichier .glade (GtkBuilder) ===\n\n");
+
+    gtk_init(&argc, &argv);
+
+    rawptr<GtkBuilder> builder = gtk_builder_new();
+    int ok = gtk_builder_add_from_file(builder, "/tmp/matlabc_full/examples/gui_glade/ui/window.glade", null);
+    printf("Chargement de ui/window.glade -> %s\n", ok != 0 ? "succes" : "echec");
+
+    rawptr<GObject> window = gtk_builder_get_object(builder, "main_window");
+    rawptr<GObject> label = gtk_builder_get_object(builder, "greeting_label");
+    rawptr<GObject> button = gtk_builder_get_object(builder, "ok_button");
+
+    printf("Objets recuperes depuis le fichier .glade :\n");
+    printf("  main_window     : %s\n", window != null ? "trouve" : "MANQUANT");
+    printf("  greeting_label  : %s\n", label  != null ? "trouve" : "MANQUANT");
+    printf("  ok_button       : %s\n", button != null ? "trouve" : "MANQUANT");
+
+    rawptr<GtkWidget> window_widget = cast<rawptr<GtkWidget>>(window);
+    gtk_widget_show_all(window_widget);
+    printf("\nFenetre (definie dans le fichier .glade) affichee.\n");
+
+    int iterations = 0;
+    while (gtk_events_pending() != 0 && iterations < 50) {
+        gtk_main_iteration();
+        iterations = iterations + 1;
+    }
+    printf("%d evenement(s) traite(s).\n", iterations);
+
+    gtk_widget_destroy(window_widget);
+
+    str verdict = "OK";
+    if (window == null || label == null || button == null || ok == 0) { verdict = "FAIL"; }
+    printf("\n[%s] UI entierement definie dans un fichier .glade,\n", verdict.data());
+    printf("      chargee et instanciee par GtkBuilder depuis MATL-ABC.\n");
+
+    return 0;
+}

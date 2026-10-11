@@ -1,0 +1,22 @@
+/* adwaita.mabh — interface MATL-ABC minimale pour libadwaita (GTK4)
+ *
+ * libadwaita fournit les widgets "modernes" de GNOME (AdwWindow,
+ * AdwHeaderBar...) par-dessus GTK4 -- AdwWindow HERITE de GtkWindow
+ * (meme systeme de types GObject que GTK3), donc les fonctions GTK4
+ * generiques (gtk_window_set_title, gtk_window_present...)
+ * s'appliquent directement a un rawptr<GtkWidget> venant d'adwaita,
+ * sans distinction de type a l'execution.
+ */
+
+void adw_init();
+rawptr<GtkWidget> adw_window_new();
+
+void gtk_window_set_title(rawptr<GtkWidget> window, char* title);
+void gtk_window_set_default_size(rawptr<GtkWidget> window, int w, int h);
+void gtk_window_present(rawptr<GtkWidget> window);
+
+rawptr<GtkWidget> adw_header_bar_new();
+rawptr<GtkWidget> adw_toolbar_view_new();
+
+int  g_main_context_pending(rawptr<GMainContext> context);
+int  g_main_context_iteration(rawptr<GMainContext> context, int may_block);

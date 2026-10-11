@@ -1,0 +1,13 @@
+/* glade.mabh — interface MATL-ABC pour GtkBuilder (chargement de
+ * fichiers .glade a l'execution) -- complement de gtk3.mabh.
+ *
+ * gtk_builder_add_from_file prend normalement un GError** en dernier
+ * argument pour rapporter les erreurs de parsing XML -- simplifie
+ * ici en acceptant "null" (schema courant pour un test minimal ;
+ * en production, un vrai pointeur GError* permettrait de lire le
+ * message d'erreur en cas d'echec).
+ */
+
+rawptr<GtkBuilder> gtk_builder_new();
+int      gtk_builder_add_from_file(rawptr<GtkBuilder> builder, char* filename, rawptr error);
+rawptr<GObject>    gtk_builder_get_object(rawptr<GtkBuilder> builder, char* name);

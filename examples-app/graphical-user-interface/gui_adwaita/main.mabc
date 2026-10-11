@@ -1,0 +1,38 @@
+/* ===========================================================
+ * Test minimal libadwaita (GTK4) — via FFI MATL-ABC
+ * ===========================================================
+ * libadwaita fournit les widgets "modernes" GNOME par-dessus GTK4.
+ * AdwWindow herite de GtkWindow (meme systeme GObject que GTK3), les
+ * fonctions GTK4 generiques s'y appliquent directement.
+ * =========================================================== */
+
+import <cstd>
+import <adwaita>
+
+int main() {
+    printf("=== Test minimal libadwaita (GTK4) ===\n\n");
+
+    adw_init();
+
+    /* dimensions : notation litterale */
+    matrix|int, 1, 2| size = | 400 250 |;
+
+    rawptr<GtkWidget> window = adw_window_new();
+    gtk_window_set_title(window, "MATL-ABC + libadwaita");
+    gtk_window_set_default_size(window, size[0][0], size[0][1]);
+
+    gtk_window_present(window);
+    printf("Fenetre AdwWindow %dx%d creee et presentee (Xvfb).\n", size[0][0], size[0][1]);
+
+    rawptr<GMainContext> ctx = null;
+    int iterations = 0;
+    while (g_main_context_pending(ctx) != 0 && iterations < 50) {
+        g_main_context_iteration(ctx, 0);
+        iterations = iterations + 1;
+    }
+    printf("%d evenement(s) traite(s).\n", iterations);
+
+    printf("\n[OK] libadwaita (GTK4) fonctionne via FFI MATL-ABC.\n");
+
+    return 0;
+}

@@ -1,0 +1,14 @@
+/* qt.mabh — interface MATL-ABC pour Qt6, VIA un mini-wrapper C
+ * (qt_wrapper.cpp, compile a part avec g++) -- Qt etant du C++ pur
+ * (classes, signaux/slots bases sur moc), un lien FFI direct depuis
+ * MATL-ABC est impossible sans cette etape intermediaire, meme
+ * principe que wxWidgets.
+ */
+void   qt_initialize();
+rawptr qt_widget_new(int w, int h);
+void   qt_widget_set_title(rawptr widget, char* title);
+void   qt_widget_show(rawptr widget);
+void   qt_process_events();
+void   qt_widget_destroy(rawptr widget);
+int    qt_version_major();
+int    qt_version_minor();

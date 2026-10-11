@@ -1,0 +1,38 @@
+/* ===========================================================
+ * Test minimal Dear ImGui — via mini-wrapper C + FFI MATL-ABC
+ * ===========================================================
+ * ImGui est "immediate mode" : sans backend de rendu reel (OpenGL/
+ * SDL/GLFW), ce test valide contexte + construction de frame (le
+ * "modele de donnees" de l'UI), pas la rasterisation a l'ecran --
+ * suffisant pour prouver que le pont FFI fonctionne.
+ * =========================================================== */
+
+import <cstd>
+import <imguiwrapper>
+
+int main() {
+    printf("=== Test minimal Dear ImGui (via wrapper C) ===\n\n");
+    printf("Version ImGui : %s\n", imgui_get_version());
+
+    rawptr ctx = imgui_create_context();
+
+    imgui_new_frame();
+    imgui_begin_window("MATL-ABC + Dear ImGui");
+    imgui_text("Bonjour depuis MATL-ABC !");
+    int clicked = imgui_button("Cliquez ici");
+    imgui_end_window();
+    imgui_render();
+
+    int vtx_count = imgui_get_vertex_count();
+    printf("Frame construite : %d sommet(s) rapportes par GetDrawData().\n", vtx_count);
+    printf("(0 est possible ici : aucune texture de police reellement chargee\n");
+    printf(" sur un GPU -- ce test valide la CHAINE D'APPELS complete sans\n");
+    printf(" crash, pas le rendu pixel exact, qui exigerait un vrai backend.)\n");
+
+    printf("\n[OK] Dear ImGui fonctionne via wrapper C + FFI MATL-ABC\n");
+    printf("     (CreateContext -> NewFrame -> Begin -> Text -> Button ->\n");
+    printf("      End -> Render -> GetDrawData -> DestroyContext, sans crash).\n");
+
+    imgui_destroy_context(ctx);
+    return 0;
+}

@@ -1,0 +1,23 @@
+[project]
+name        = "gui_imgui"
+version     = "1.0.0"
+description = "Test minimal Dear ImGui via mini-wrapper C + FFI MATL-ABC"
+entry       = "main.mabc"
+
+[types]
+[dependencies]
+
+[backend]
+blas   = false
+lapack = false
+fft    = false
+llvm   = true
+
+[build]
+optimize     = true
+output       = "/tmp/gui_imgui_out"
+strict_types = true
+
+[lib.imguiwrapper]
+file    = "/tmp/matlabc_full/examples/gui_imgui/libimguiwrapper.so"
+headers = "headers/imgui.mabh"

@@ -1,0 +1,26 @@
+[project]
+name        = "gui_tk"
+version     = "1.0.0"
+description = "Test minimal Tk via FFI MATL-ABC (pilote par scripts Tcl)"
+entry       = "main.mabc"
+
+[types]
+[dependencies]
+
+[backend]
+blas   = false
+lapack = false
+fft    = false
+llvm   = true
+
+[build]
+optimize     = true
+output       = "/tmp/gui_tk_out"
+strict_types = true
+
+[lib.tk]
+file    = "/usr/lib/x86_64-linux-gnu/libtk8.6.so"
+headers = "headers/tk.mabh"
+
+[lib.tcl]
+file = "/usr/lib/x86_64-linux-gnu/libtcl8.6.so"

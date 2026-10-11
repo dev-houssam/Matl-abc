@@ -1,0 +1,56 @@
+[project]
+name        = "gui_adwaita"
+version     = "1.0.0"
+description = "Test minimal libadwaita (GTK4) via FFI MATL-ABC"
+entry       = "main.mabc"
+
+[types]
+[dependencies]
+
+[backend]
+blas   = false
+lapack = false
+fft    = false
+llvm   = true
+
+[build]
+optimize     = true
+output       = "/tmp/gui_adwaita_out"
+strict_types = true
+
+[lib.adwaita]
+file    = "/usr/lib/x86_64-linux-gnu/libadwaita-1.so"
+headers = "headers/adwaita.mabh"
+
+[lib.gtk4]
+file = "/usr/lib/x86_64-linux-gnu/libgtk-4.so"
+
+[lib.graphene]
+file = "/usr/lib/x86_64-linux-gnu/libgraphene-1.0.so"
+
+[lib.glib]
+file = "/usr/lib/x86_64-linux-gnu/libglib-2.0.so"
+
+[lib.gobject]
+file = "/usr/lib/x86_64-linux-gnu/libgobject-2.0.so"
+
+[lib.gio]
+file = "/usr/lib/x86_64-linux-gnu/libgio-2.0.so"
+
+[lib.pango]
+file = "/usr/lib/x86_64-linux-gnu/libpango-1.0.so"
+
+[lib.pangocairo]
+file = "/usr/lib/x86_64-linux-gnu/libpangocairo-1.0.so"
+
+[lib.cairo]
+file = "/usr/lib/x86_64-linux-gnu/libcairo.so"
+
+[lib.cairogobject]
+file = "/usr/lib/x86_64-linux-gnu/libcairo-gobject.so"
+
+[lib.gdkpixbuf]
+file = "/usr/lib/x86_64-linux-gnu/libgdk_pixbuf-2.0.so"
+
+[lib.harfbuzz]
+file = "/usr/lib/x86_64-linux-gnu/libharfbuzz.so"

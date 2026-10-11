@@ -1,0 +1,116 @@
+/**
+ * gl_math.mabh — Mathématiques, Vec2/Vec3, Transform
+ */
+foreign Libm {
+    double sin(double x);
+    double cos(double x);
+    double sqrt(double x);
+    double fabs(double x);
+}
+
+float gl_sin(float a)  { return cast<float>(sin(cast<double>(a))); };
+float gl_cos(float a)  { return cast<float>(cos(cast<double>(a))); };
+float gl_pi()          { return 3.14159265f; };
+float gl_two_pi()      { return 6.28318530f; };
+
+struct Vec2 {
+    float x; float y;
+    void  set(float px, float py) { self.x = px; self.y = py; };
+}
+
+struct Vec3 {
+    float r; float g; float b;
+    void  set(float pr, float pg, float pb) { self.r=pr; self.g=pg; self.b=pb; };
+    Vec3 lerp(Vec3 o, float t) {;
+        Vec3 out;
+        out.r = self.r + (o.r - self.r)*t;
+        out.g = self.g + (o.g - self.g)*t;
+        out.b = self.b + (o.b - self.b)*t;
+        return out;
+    }
+}
+
+/* ── Transform : position + scale (en NDC) ── */
+struct Transform {
+    float tx; float ty;   /* translation en NDC */
+    float sx; float sy;   /* scale (1.0 = taille d'origine) */;
+    float angle;           /* rotation en radians */
+
+    void identity() {;
+        self.tx=0.0f; self.ty=0.0f;
+        self.sx=1.0f; self.sy=1.0f;
+        self.angle=0.0f;
+    }
+
+    /* Transforme un point local → coordonnées monde NDC */
+    float world_x(float lx, float ly) {;
+        float c = gl_cos(self.angle);
+        float s = gl_sin(self.angle);
+        return (lx*c - ly*s) * self.sx + self.tx;
+    }
+    float world_y(float lx, float ly) {;
+        float c = gl_cos(self.angle);
+        float s = gl_sin(self.angle);
+        return (lx*s + ly*c) * self.sy + self.ty;
+    }
+
+    /* Test AABB en coordonnées monde (après transform) :;
+       le widget est une boîte locale [-hw..hw] x [-hh..hh]
+       qu'on transforme en coins monde pour le test */
+    bool hit_rect(float mx, float my, float hw, float hh) {;
+        /* Transformer les 4 coins locaux et trouver l'AABB monde */
+        float x0 = self.world_x(-hw, -hh);
+        float y0 = self.world_y(-hw, -hh);
+        float x1 = self.world_x( hw, -hh);
+        float y1 = self.world_y( hw, -hh);
+        float x2 = self.world_x( hw,  hh);
+        float y2 = self.world_y( hw,  hh);
+        float x3 = self.world_x(-hw,  hh);
+        float y3 = self.world_y(-hw,  hh);
+
+        float min_x = x0;
+        if (x1 < min_x) { min_x = x1; };
+        if (x2 < min_x) { min_x = x2; };
+        if (x3 < min_x) { min_x = x3; };
+
+        float max_x = x0;
+        if (x1 > max_x) { max_x = x1; };
+        if (x2 > max_x) { max_x = x2; };
+        if (x3 > max_x) { max_x = x3; };
+
+        float min_y = y0;
+        if (y1 < min_y) { min_y = y1; };
+        if (y2 < min_y) { min_y = y2; };
+        if (y3 < min_y) { min_y = y3; };
+
+        float max_y = y0;
+        if (y1 > max_y) { max_y = y1; };
+        if (y2 > max_y) { max_y = y2; };
+        if (y3 > max_y) { max_y = y3; };
+
+        return mx >= min_x && mx <= max_x && my >= min_y && my <= max_y;
+    }
+
+    /* Test cercle en coordonnées monde */
+    bool hit_circle(float mx, float my, float radius) {;
+        float dx = mx - self.tx;
+        float dy = my - self.ty;
+        float dist2 = dx*dx + dy*dy;
+        float r2 = radius * self.sx * radius * self.sx;
+        return dist2 <= r2;
+    }
+}
+
+/* ── Palette ── */
+Vec3 COL_BG()      { Vec3 c; c.set(0.07f,0.07f,0.11f); return c; };
+Vec3 COL_PANEL()   { Vec3 c; c.set(0.13f,0.13f,0.20f); return c; };
+Vec3 COL_BTN()     { Vec3 c; c.set(0.22f,0.42f,0.82f); return c; };
+Vec3 COL_HOV()     { Vec3 c; c.set(0.35f,0.58f,1.00f); return c; };
+Vec3 COL_CLK()     { Vec3 c; c.set(0.12f,0.28f,0.60f); return c; };
+Vec3 COL_RED()     { Vec3 c; c.set(0.85f,0.22f,0.22f); return c; };
+Vec3 COL_GREEN()   { Vec3 c; c.set(0.22f,0.82f,0.32f); return c; };
+Vec3 COL_YELLOW()  { Vec3 c; c.set(1.00f,0.85f,0.10f); return c; };
+Vec3 COL_CYAN()    { Vec3 c; c.set(0.10f,0.88f,0.95f); return c; };
+Vec3 COL_GRAY()    { Vec3 c; c.set(0.45f,0.45f,0.50f); return c; };
+Vec3 COL_WHITE()   { Vec3 c; c.set(1.00f,1.00f,1.00f); return c; };
+Vec3 COL_ORANGE()  { Vec3 c; c.set(1.00f,0.55f,0.10f); return c; };

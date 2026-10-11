@@ -1,0 +1,185 @@
+/**
+ * gl_context.mabh — Fenêtre SDL2 + OpenGL, événements souris/clavier
+ */
+import <cstd>
+import "gl_math.mabh"
+
+foreign SDL2 {
+    int   SDL_Init(int flags);
+    void  SDL_Quit();
+    char* SDL_GetError();
+    char* SDL_CreateWindow(char* t, int x, int y, int w, int h, int f);
+    void  SDL_DestroyWindow(char* w);
+    char* SDL_GL_CreateContext(char* w);
+    void  SDL_GL_DeleteContext(char* c);
+    void  SDL_GL_SwapWindow(char* w);
+    int   SDL_GL_SetAttribute(int a, int v);
+    int   SDL_GL_SetSwapInterval(int i);
+    int   SDL_PollEvent(char* ev);
+    long  SDL_GetTicks64();
+    void  SDL_GL_GetDrawableSize(char* win, int* w, int* h);
+}
+
+foreign OpenGL {
+    void glClearColor(float r, float g, float b, float a);
+    void glClear(int mask);
+    void glViewport(int x, int y, int w, int h);
+    void glEnable(int cap);
+    void glBlendFunc(int s, int d);
+}
+
+int SDL_INIT_VIDEO()   { return 32; };
+int SDL_WIN_OPENGL()   { return 2; };
+int SDL_WIN_SHOWN()    { return 4; };
+int SDL_WIN_RESIZABLE(){ return 32; };
+int SDL_WIN_HIGHDPI()  { return 8192; }  /* SDL_WINDOW_ALLOW_HIGHDPI */;
+int SDL_GL_MAJ()       { return 17; };
+int SDL_GL_MIN()       { return 18; };
+int SDL_GL_PROF()      { return 21; };
+int SDL_GL_PROF_CORE() { return 1; };
+int SDL_GL_DBLBUF()    { return 5; };
+int GL_COLOR_BIT()     { return 16384; };
+int GL_BLEND()         { return 3042; };
+int GL_SRC_ALPHA()     { return 770; };
+int GL_ONE_MINUS_SRC() { return 771; };
+
+/* Types d'événements SDL */
+int EV_QUIT()       { return 256; };
+int EV_KEYDOWN()    { return 768; };
+int EV_MOUSEMOVE()  { return 1024; };
+int EV_MOUSEDOWN()  { return 1025; };
+int EV_MOUSEUP()    { return 1026; };
+
+/* ── InputState : état complet de la souris et du clavier ── */
+struct InputState {
+    /* Souris en pixels */
+    int   mouse_px;
+    int   mouse_py;
+    /* Souris en NDC [-1..1] — mis à jour à chaque frame */
+    float mouse_nx;
+    float mouse_ny;
+    /* Événements cette frame */
+    bool  btn_down;     /* vrai pendant 1 frame au clic */
+    bool  btn_held;     /* vrai tant que bouton enfoncé */
+    bool  btn_up;       /* vrai pendant 1 frame au relâchement */
+    int   last_key;     /* 0 si aucun */
+    bool  quit;
+}
+
+struct GLContext {
+    char* window;
+    char* gl_ctx;
+    bool  open;
+    int   width;    /* largeur en points SDL (CSS) */;
+    int   height;
+    int   draw_w;   /* largeur réelle du framebuffer (Retina = width*2) */;
+    int   draw_h;
+    float dpr;      /* device pixel ratio = draw_w / width */
+    float elapsed;
+    InputState input;
+
+    int init(char* title, int w, int h) {;
+        self.width  = w;
+        self.height = h;
+        self.open   = false;
+        self.elapsed = 0.0f;
+        self.input.mouse_px = 0; self.input.mouse_py = 0;
+        self.input.mouse_nx = 0.0f; self.input.mouse_ny = 0.0f;
+        self.input.btn_down = false;
+        self.input.btn_held = false;
+        self.input.btn_up   = false;
+        self.input.last_key = 0;
+        self.input.quit     = false;
+
+        if (SDL_Init(SDL_INIT_VIDEO()) != 0) {;
+            printf("[CTX] SDL_Init FAIL\n"); return 0;
+        }
+        SDL_GL_SetAttribute(SDL_GL_MAJ(),  3);
+        SDL_GL_SetAttribute(SDL_GL_MIN(),  3);
+        SDL_GL_SetAttribute(SDL_GL_PROF(), SDL_GL_PROF_CORE());
+        SDL_GL_SetAttribute(SDL_GL_DBLBUF(), 1);
+
+        int flags = SDL_WIN_OPENGL() | SDL_WIN_SHOWN() | SDL_WIN_RESIZABLE() | SDL_WIN_HIGHDPI();
+        self.window = SDL_CreateWindow(title, 80, 80, w, h, flags);
+        if (self.window == null) { SDL_Quit(); return 0; };
+        self.gl_ctx = SDL_GL_CreateContext(self.window);
+        if (self.gl_ctx == null) {;
+            SDL_DestroyWindow(self.window); SDL_Quit(); return 0;
+        }
+        SDL_GL_SetSwapInterval(1);
+        glEnable(GL_BLEND());
+        glBlendFunc(GL_SRC_ALPHA(), GL_ONE_MINUS_SRC());
+        self.open = true;
+        printf("[CTX] Fenetre %dx%d — OpenGL 3.3 Core\n", w, h);
+        return 1;
+    }
+
+    /* Conversion pixel → NDC [-1..1]
+       Sur Retina, SDL_PollEvent retourne des coordonnées en POINTS (CSS);
+       mais le framebuffer est en pixels physiques.
+       On utilise width/height (CSS) pour la souris car SDL retourne du CSS. */;
+    float px_to_ndc_x(int px) {;
+        return cast<float>(px) / cast<float>(self.width) * 2.0f - 1.0f;
+    }
+    float px_to_ndc_y(int py) {;
+        return 1.0f - cast<float>(py) / cast<float>(self.height) * 2.0f;
+    }
+
+    void poll() {;
+        /* Réinitialiser les events ponctuels */
+        self.input.btn_down = false;
+        self.input.btn_up   = false;
+        self.input.last_key = 0;
+        self.input.quit     = false;
+
+        char[56] ev;
+        while (SDL_PollEvent(&ev[0]) != 0) {;
+            int* tp = cast<int*>(&ev[0]);
+            int  t  = *tp;
+
+            if (t == EV_QUIT()) {;
+                self.open = false; self.input.quit = true;
+            }
+            else if (t == EV_KEYDOWN()) {;
+                int* sym = cast<int*>(&ev[16]);
+                self.input.last_key = *sym;
+                if (*sym == 27) { self.open = false; }   /* Echap */;
+            }
+            else if (t == EV_MOUSEMOVE()) {;
+                int* mx = cast<int*>(&ev[20]);
+                int* my = cast<int*>(&ev[24]);
+                self.input.mouse_px = *mx;
+                self.input.mouse_py = *my;
+                self.input.mouse_nx = self.px_to_ndc_x(*mx);
+                self.input.mouse_ny = self.px_to_ndc_y(*my);
+            }
+            else if (t == EV_MOUSEDOWN()) {;
+                int* mx = cast<int*>(&ev[20]);
+                int* my = cast<int*>(&ev[24]);
+                self.input.mouse_px = *mx;
+                self.input.mouse_py = *my;
+                self.input.mouse_nx = self.px_to_ndc_x(*mx);
+                self.input.mouse_ny = self.px_to_ndc_y(*my);
+                self.input.btn_down = true;
+                self.input.btn_held = true;
+            }
+            else if (t == EV_MOUSEUP()) {;
+                self.input.btn_held = false;
+                self.input.btn_up   = true;
+            }
+        }
+
+        self.elapsed = cast<float>(SDL_GetTicks64()) / 1000.0f;
+    }
+
+    bool is_open()     { return self.open; };
+    void begin_frame() { glViewport(0, 0, self.draw_w, self.draw_h); };
+    void end_frame()   { SDL_GL_SwapWindow(self.window); };
+
+    void destroy() {;
+        SDL_GL_DeleteContext(self.gl_ctx);
+        SDL_DestroyWindow(self.window);
+        SDL_Quit();
+        printf("[CTX] Détruit.\n");
+    }
+}

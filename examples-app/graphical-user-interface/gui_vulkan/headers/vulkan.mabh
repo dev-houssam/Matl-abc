@@ -1,0 +1,22 @@
+/* vulkan.mabh — interface MATL-ABC minimale pour Vulkan
+ *
+ * Test MINIMAL : creation/destruction d'instance, enumeration des
+ * peripheriques physiques -- SANS creation de fenetre/surface (pas
+ * de gestionnaire de fenetres natif dans ce bac a sable au-dela de
+ * Xvfb, et Vulkan necessite une extension de surface specifique a la
+ * plateforme pour aller plus loin). Sans GPU materiel ni pilote
+ * logiciel (lavapipe/llvmpipe), vkEnumeratePhysicalDevices peut
+ * legitimement retourner 0 peripherique -- ce n'est PAS un echec du
+ * pont FFI, juste l'absence de materiel/pilote dans ce sandbox.
+ *
+ * DECOUVERTE : un fichier .mabh ne supporte QUE des declarations de
+ * struct OPAQUES ("typedef struct Nom Nom;" -- SigStruct, forward
+ * declaration sans champs), jamais une struct avec des champs types
+ * comme dans un .mabc normal. VkInstanceCreateInfo (une vraie struct
+ * avec 8 champs, disposition memoire ABI-sensible) doit donc etre
+ * definie directement dans main.mabc, PAS ici -- voir main.mabc.
+ */
+
+int  vkCreateInstance(rawptr pCreateInfo, rawptr pAllocator, rawptr* pInstance);
+void vkDestroyInstance(rawptr instance, rawptr pAllocator);
+int  vkEnumeratePhysicalDevices(rawptr instance, int* pPhysicalDeviceCount, rawptr* pPhysicalDevices);

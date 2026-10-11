@@ -1,0 +1,194 @@
+/**
+ * MATL-ABC UI v2 — Arbre de scène
+ * Le hit_test et le shader utilisent EXACTEMENT le même Transform.
+ */
+import <cstd>
+import "lib/gl_math.mabh"
+import "lib/gl_context.mabh"
+import "lib/gl_draw.mabh"
+import "lib/scene.mabh"
+
+int main() {
+    printf("\n╔═══════════════════════════════════════════╗\n");
+    printf("║  MATL-ABC UI v2 — Scene Tree              ║\n");
+    printf("║  hover + clic corrects via Transform      ║\n");
+    printf("║  1/2/3=forme   R=reset   Echap=quit       ║\n");
+    printf("╚═══════════════════════════════════════════╝\n\n");
+
+    GLContext ctx;
+    str title = "MATL-ABC UI v2";
+    if (ctx.init(cstr_of(title), 860, 640) == 0) { return 1; }
+    Shader sh; sh.build();
+
+    /* ── Nœuds de la scène ── */
+    SceneNode nd_glow;
+    nd_glow.init("glow", WidgetKind.WK_GLOW);
+    nd_glow.base_tx=0.0f; nd_glow.base_ty=0.08f;
+    nd_glow.base_sx=1.0f; nd_glow.base_sy=1.0f;
+    nd_glow.radius=0.75f; nd_glow.spin_speed=0.04f;
+    Vec3 gc; gc.set(0.04f,0.13f,0.20f); nd_glow.col_normal=gc;
+
+    SceneNode nd_center;
+    nd_center.init("centre", WidgetKind.WK_SHAPE_BTN);
+    nd_center.base_tx=0.0f; nd_center.base_ty=0.10f;
+    nd_center.base_sx=1.0f; nd_center.base_sy=1.0f;
+    nd_center.radius=0.24f; nd_center.spin_speed=0.35f;
+    nd_center.shape_kind=ShapeKind.SK_CIRCLE;
+    nd_center.col_normal=COL_CYAN();
+    nd_center.col_hovered=COL_WHITE();
+    nd_center.col_active=COL_ORANGE();
+
+    float sy=0.66f; float sr=0.085f;
+
+    SceneNode nd_bc;
+    nd_bc.init("btn_cercle", WidgetKind.WK_SHAPE_BTN);
+    nd_bc.base_tx=-0.55f; nd_bc.base_ty=sy;
+    nd_bc.base_sx=1.0f; nd_bc.base_sy=1.0f;
+    nd_bc.radius=sr; nd_bc.spin_speed=0.30f;
+    nd_bc.shape_kind=ShapeKind.SK_CIRCLE;
+    nd_bc.col_normal=COL_CYAN(); nd_bc.col_hovered=COL_WHITE();
+
+    SceneNode nd_bt;
+    nd_bt.init("btn_triangle", WidgetKind.WK_SHAPE_BTN);
+    nd_bt.base_tx=0.0f; nd_bt.base_ty=sy;
+    nd_bt.base_sx=1.0f; nd_bt.base_sy=1.0f;
+    nd_bt.radius=sr; nd_bt.spin_speed=0.50f;
+    nd_bt.shape_kind=ShapeKind.SK_TRIANGLE;
+    nd_bt.col_normal=COL_YELLOW(); nd_bt.col_hovered=COL_WHITE();
+
+    SceneNode nd_bs;
+    nd_bs.init("btn_etoile", WidgetKind.WK_SHAPE_BTN);
+    nd_bs.base_tx=0.55f; nd_bs.base_ty=sy;
+    nd_bs.base_sx=1.0f; nd_bs.base_sy=1.0f;
+    nd_bs.radius=sr; nd_bs.spin_speed=-0.65f;
+    nd_bs.shape_kind=ShapeKind.SK_STAR;
+    nd_bs.col_normal=COL_RED(); nd_bs.col_hovered=COL_WHITE();
+
+    float cy=-0.28f; float bw=0.19f; float bh=0.07f;
+
+    SceneNode nd_rouge;
+    nd_rouge.init("btn_rouge", WidgetKind.WK_BUTTON);
+    nd_rouge.base_tx=-0.55f; nd_rouge.base_ty=cy;
+    nd_rouge.hw=bw; nd_rouge.hh=bh;
+    nd_rouge.col_normal=COL_RED();
+    Vec3 rh; rh.set(1.0f,0.5f,0.5f); nd_rouge.col_hovered=rh;
+
+    SceneNode nd_vert;
+    nd_vert.init("btn_vert", WidgetKind.WK_BUTTON);
+    nd_vert.base_tx=0.0f; nd_vert.base_ty=cy;
+    nd_vert.hw=bw; nd_vert.hh=bh;
+    nd_vert.col_normal=COL_GREEN();
+    Vec3 gh; gh.set(0.5f,1.0f,0.6f); nd_vert.col_hovered=gh;
+
+    SceneNode nd_bleu;
+    nd_bleu.init("btn_bleu", WidgetKind.WK_BUTTON);
+    nd_bleu.base_tx=0.55f; nd_bleu.base_ty=cy;
+    nd_bleu.hw=bw; nd_bleu.hh=bh;
+    nd_bleu.col_normal=COL_BTN(); nd_bleu.col_hovered=COL_HOV();
+
+    SceneNode nd_reset;
+    nd_reset.init("btn_reset", WidgetKind.WK_BUTTON);
+    nd_reset.base_tx=-0.28f; nd_reset.base_ty=-0.60f;
+    nd_reset.hw=0.22f; nd_reset.hh=0.07f;
+    nd_reset.col_normal=COL_GRAY();
+    Vec3 resh; resh.set(0.7f,0.7f,0.75f); nd_reset.col_hovered=resh;
+
+    SceneNode nd_quit;
+    nd_quit.init("btn_quit", WidgetKind.WK_BUTTON);
+    nd_quit.base_tx=0.28f; nd_quit.base_ty=-0.60f;
+    nd_quit.hw=0.18f; nd_quit.hh=0.07f;
+    Vec3 qn; qn.set(0.55f,0.12f,0.12f); nd_quit.col_normal=qn;
+    Vec3 qh; qh.set(0.88f,0.18f,0.18f); nd_quit.col_hovered=qh;
+
+    printf("[MAIN] 10 noeuds — boucle...\n\n");
+    int active_shape=ShapeKind.SK_CIRCLE;
+    int click_count=0; int frame=0;
+
+    while (ctx.is_open()) {
+        ctx.poll();
+        float t=ctx.elapsed;
+        float mnx=ctx.input.mouse_nx;
+        float mny=ctx.input.mouse_ny;
+        bool clk=ctx.input.btn_down;
+
+        /* Update */
+        nd_glow.update(mnx,mny,clk,t);
+        nd_center.update(mnx,mny,clk,t);
+        nd_bc.update(mnx,mny,clk,t);
+        nd_bt.update(mnx,mny,clk,t);
+        nd_bs.update(mnx,mny,clk,t);
+        nd_rouge.update(mnx,mny,clk,t);
+        nd_vert.update(mnx,mny,clk,t);
+        nd_bleu.update(mnx,mny,clk,t);
+        nd_reset.update(mnx,mny,clk,t);
+        nd_quit.update(mnx,mny,clk,t);
+
+        /* Clics */
+        if (nd_bc.clicked) {
+            nd_center.shape_kind=ShapeKind.SK_CIRCLE; nd_center.dirty=true;
+            click_count=click_count+1;
+            printf("[APP] Cercle — clic #%d\n", click_count);
+        }
+        if (nd_bt.clicked) {
+            nd_center.shape_kind=ShapeKind.SK_TRIANGLE; nd_center.dirty=true;
+            click_count=click_count+1;
+            printf("[APP] Triangle — clic #%d\n", click_count);
+        }
+        if (nd_bs.clicked) {
+            nd_center.shape_kind=ShapeKind.SK_STAR; nd_center.dirty=true;
+            click_count=click_count+1;
+            printf("[APP] Etoile — clic #%d\n", click_count);
+        }
+        if (nd_rouge.clicked) {
+            nd_center.col_normal=COL_RED(); nd_center.dirty=true;
+            printf("[APP] Couleur ROUGE\n");
+        }
+        if (nd_vert.clicked) {
+            nd_center.col_normal=COL_GREEN(); nd_center.dirty=true;
+            printf("[APP] Couleur VERT\n");
+        }
+        if (nd_bleu.clicked) {
+            nd_center.col_normal=COL_BTN(); nd_center.dirty=true;
+            printf("[APP] Couleur BLEU\n");
+        }
+        if (nd_reset.clicked) {
+            active_shape=ShapeKind.SK_CIRCLE;
+            nd_center.shape_kind=ShapeKind.SK_CIRCLE;
+            nd_center.col_normal=COL_CYAN(); nd_center.dirty=true;
+            click_count=0; printf("[APP] RESET\n");
+        }
+        if (nd_quit.clicked) { ctx.open=false; }
+
+        /* Clavier */
+        if (ctx.input.last_key != 0) {
+            match (ctx.input.last_key) {
+                49 => { nd_center.shape_kind=ShapeKind.SK_CIRCLE; nd_center.dirty=true; printf("[KEY] 1=Cercle\n"); }
+                50 => { nd_center.shape_kind=ShapeKind.SK_TRIANGLE; nd_center.dirty=true; printf("[KEY] 2=Triangle\n"); }
+                51 => { nd_center.shape_kind=ShapeKind.SK_STAR; nd_center.dirty=true; printf("[KEY] 3=Etoile\n"); }
+                114 => { nd_center.shape_kind=ShapeKind.SK_CIRCLE; nd_center.col_normal=COL_CYAN(); nd_center.dirty=true; click_count=0; printf("[KEY] R=Reset\n"); }
+                _ => { }
+            }
+        }
+
+        /* Rendu */
+        ctx.begin_frame();
+        glClearColor(0.05f,0.05f,0.09f,1.0f);
+        glClear(GL_COLOR_BIT());
+        sh.use();
+        nd_glow.draw(&sh,t);
+        nd_center.draw(&sh,t);
+        nd_bc.draw(&sh,t); nd_bt.draw(&sh,t); nd_bs.draw(&sh,t);
+        nd_rouge.draw(&sh,t); nd_vert.draw(&sh,t); nd_bleu.draw(&sh,t);
+        nd_reset.draw(&sh,t); nd_quit.draw(&sh,t);
+        ctx.end_frame();
+
+        frame=frame+1;
+        if (frame%180==0) {
+            printf("[MAIN] Frame %d — t=%.1fs — clics=%d\n",
+                   frame, cast<double>(t), click_count);
+        }
+    }
+    printf("\n[MAIN] %d frames — %d clics — terminé.\n", frame, click_count);
+    sh.destroy(); ctx.destroy();
+    return 0;
+}

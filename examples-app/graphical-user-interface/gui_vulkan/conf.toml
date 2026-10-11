@@ -1,0 +1,23 @@
+[project]
+name        = "gui_vulkan"
+version     = "1.0.0"
+description = "Test minimal Vulkan via FFI MATL-ABC (creation d'instance)"
+entry       = "main.mabc"
+
+[types]
+[dependencies]
+
+[backend]
+blas   = false
+lapack = false
+fft    = false
+llvm   = true
+
+[build]
+optimize     = true
+output       = "/tmp/gui_vulkan_out"
+strict_types = true
+
+[lib.vulkan]
+file    = "/usr/lib/x86_64-linux-gnu/libvulkan.so"
+headers = "headers/vulkan.mabh"

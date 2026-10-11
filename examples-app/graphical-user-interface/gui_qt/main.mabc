@@ -1,0 +1,32 @@
+/* ===========================================================
+ * Test minimal Qt6 — via mini-wrapper C + FFI MATL-ABC
+ * ===========================================================
+ * Qt est du C++ pur (QApplication, QWidget, signaux/slots bases sur
+ * moc) -- meme detour obligatoire par un wrapper extern "C" que pour
+ * wxWidgets (matlabc_doc/29 pour la meme discussion sur LibTorch/
+ * OpenNN).
+ * =========================================================== */
+
+import <cstd>
+import <qtwrapper>
+
+int main() {
+    printf("=== Test minimal Qt6 (via wrapper C) ===\n\n");
+    printf("Version Qt : %d.%d\n", qt_version_major(), qt_version_minor());
+
+    qt_initialize();
+
+    /* dimensions : notation litterale */
+    matrix|int, 1, 2| size = | 380 220 |;
+
+    rawptr widget = qt_widget_new(size[0][0], size[0][1]);
+    qt_widget_set_title(widget, "MATL-ABC + Qt6");
+    qt_widget_show(widget);
+    printf("QWidget %dx%d cree et affiche.\n", size[0][0], size[0][1]);
+
+    qt_process_events();
+
+    qt_widget_destroy(widget);
+    printf("\n[OK] Qt6 fonctionne via wrapper C + FFI MATL-ABC.\n");
+    return 0;
+}

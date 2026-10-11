@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Genere par Glade (ou ecrit a la main dans le meme format -- Glade
+     est un OUTIL de conception visuelle qui produit exactement ce
+     genre de fichier XML ; GtkBuilder (la bibliotheque C, partie de
+     GTK) le CHARGE et l'INSTANCIE a l'execution -- separation nette
+     entre la DEFINITION de l'UI (ce fichier) et le CODE qui la pilote
+     (main.mabc). -->
+<interface>
+  <requires lib="gtk+" version="3.24"/>
+  <object class="GtkWindow" id="main_window">
+    <property name="title">MATL-ABC + Glade (UI depuis un fichier)</property>
+    <property name="default-width">420</property>
+    <property name="default-height">200</property>
+    <property name="window-position">center</property>
+    <child>
+      <object class="GtkBox" id="main_box">
+        <property name="orientation">vertical</property>
+        <property name="spacing">12</property>
+        <property name="margin-top">16</property>
+        <property name="margin-bottom">16</property>
+        <property name="margin-start">16</property>
+        <property name="margin-end">16</property>
+        <child>
+          <object class="GtkLabel" id="greeting_label">
+            <property name="label">Cette fenetre vient ENTIEREMENT du fichier .glade -- aucun widget cree en dur dans main.mabc.</property>
+            <property name="wrap">True</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="ok_button">
+            <property name="label">Compris !</property>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+</interface>

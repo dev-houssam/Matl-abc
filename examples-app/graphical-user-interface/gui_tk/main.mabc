@@ -1,0 +1,42 @@
+/* ===========================================================
+ * Test minimal Tk — via FFI MATL-ABC (script Tcl)
+ * ===========================================================
+ * Le plus simple des toolkits testes : Tcl_Eval() pilote TOUT via
+ * une chaine de caracteres (le langage Tcl lui-meme) -- construire
+ * la commande "wm geometry . LxH" a partir d'une matrice MATL-ABC
+ * demontre la combinaison matrix|...| + FFI texte.
+ * =========================================================== */
+
+import <cstd>
+import <cstring>
+import <tk>
+
+int main() {
+    printf("=== Test minimal Tk (Tcl) ===\n\n");
+
+    rawptr<TclInterp> interp = Tcl_CreateInterp();
+    Tcl_Init(interp);
+    Tk_Init(interp);
+
+    /* dimensions de fenetre : notation litterale */
+    matrix|int, 1, 2| size = | 300 150 |;
+
+    char[64] geom_cmd;
+    sprintf(&geom_cmd, "wm geometry . %dx%d", size[0][0], size[0][1]);
+    Tcl_Eval(interp, &geom_cmd);
+    Tcl_Eval(interp, "wm title . \"MATL-ABC + Tk\"");
+    Tcl_Eval(interp, "label .l -text \"Bonjour depuis MATL-ABC !\"");
+    Tcl_Eval(interp, "pack .l");
+    Tcl_Eval(interp, "update");
+
+    printf("Fenetre Tk %dx%d creee via script Tcl.\n", size[0][0], size[0][1]);
+
+    int rc = Tcl_Eval(interp, "winfo width .");
+    char* result = Tcl_GetStringResult(interp);
+    printf("winfo width . -> '%s' (rc=%d)\n", result, rc);
+
+    Tcl_Eval(interp, "destroy .");
+    printf("\n[OK] Tk fonctionne via FFI MATL-ABC (pilote par Tcl_Eval).\n");
+
+    return 0;
+}

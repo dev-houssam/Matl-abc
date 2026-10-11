@@ -1,0 +1,23 @@
+[project]
+name        = "gui_wx"
+version     = "1.0.0"
+description = "Test minimal wxWidgets via mini-wrapper C + FFI MATL-ABC"
+entry       = "main.mabc"
+
+[types]
+[dependencies]
+
+[backend]
+blas   = false
+lapack = false
+fft    = false
+llvm   = true
+
+[build]
+optimize     = true
+output       = "/tmp/gui_wx_out"
+strict_types = true
+
+[lib.wxwrapper]
+file    = "/tmp/matlabc_full/examples/gui_wx/libwxwrapper.so"
+headers = "headers/wx.mabh"

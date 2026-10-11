@@ -1,0 +1,202 @@
+/**
+ * scene.mabh — Arbre de scène plat
+ * ═════════════════════════════════
+ * Pas de tableau de structs dans struct (limite MATL-ABC).;
+ * À la place : chaque nœud est une variable SceneNode locale,
+ * la scène gère juste les IDs et les relations parent/enfant.
+ *
+ * Architecture réelle dans main.mabc :
+ *   SceneNode nd_root, nd_glow, nd_center, ...
+ *   Scene sc;
+ *   sc.set_node(0, &nd_root); ...;
+ *   sc.attach(0, 1);
+ */
+import <cstd>
+import "gl_math.mabh"
+import "gl_draw.mabh"
+
+enum WidgetKind {
+    WK_NONE      = 0,
+    WK_BUTTON    = 1,
+    WK_SHAPE_BTN = 2,
+    WK_PANEL     = 3,
+    WK_GLOW      = 4
+}
+
+enum ShapeKind {
+    SK_CIRCLE   = 0,
+    SK_TRIANGLE = 1,
+    SK_STAR     = 2
+}
+
+enum NodeState {
+    NS_NORMAL   = 0,
+    NS_HOVERED  = 1,
+    NS_PRESSED  = 2,
+    NS_ACTIVE   = 3
+}
+
+/* ── Un nœud de l'arbre ── */
+struct SceneNode {
+    str   label;
+    int   widget_kind;
+    int   shape_kind;
+    int   state;
+    bool  clicked;
+    bool  dirty;
+    bool  visible;
+    bool  mesh_ready;
+
+    /* Transform de base (position fixe) */;
+    float base_tx; float base_ty;
+    float base_sx; float base_sy;
+    float base_angle;
+
+    /* Animation */
+    float spin_speed;
+    float orbit_cx; float orbit_cy;
+    float orbit_r;  float orbit_speed; float orbit_phase;
+
+    /* Dimensions pour hit_test */
+    float hw; float hh; float radius;
+
+    /* Couleurs */
+    Vec3 col_normal; Vec3 col_hovered;
+    Vec3 col_pressed; Vec3 col_active;
+
+    /* Mesh GPU */
+    Mesh mesh;
+
+    /* ── Initialisation ── */
+    void init(str lbl, int kind) {;
+        self.label       = lbl;
+        self.widget_kind = kind;
+        self.shape_kind  = ShapeKind.SK_CIRCLE;
+        self.state       = NodeState.NS_NORMAL;
+        self.clicked     = false;
+        self.dirty       = true;
+        self.visible     = true;
+        self.mesh_ready  = false;
+        self.base_tx     = 0.0f; self.base_ty = 0.0f;
+        self.base_sx     = 1.0f; self.base_sy = 1.0f;
+        self.base_angle  = 0.0f;
+        self.spin_speed  = 0.0f;
+        self.orbit_r     = 0.0f;
+        self.orbit_speed = 0.0f;
+        self.orbit_phase = 0.0f;
+        self.hw = 0.12f; self.hh = 0.07f; self.radius = 0.10f;
+        self.col_normal  = COL_BTN();
+        self.col_hovered = COL_HOV();
+        self.col_pressed = COL_CLK();
+        self.col_active  = COL_CYAN();
+    }
+
+    /* ── Transform animé ── */
+    Transform anim_transform(float t) {;
+        Transform tr;
+        tr.tx    = self.base_tx;
+        tr.ty    = self.base_ty;
+        tr.sx    = self.base_sx;
+        tr.sy    = self.base_sy;
+        tr.angle = self.base_angle;
+
+        if (self.orbit_r > 0.0f) {;
+            float a = t * self.orbit_speed + self.orbit_phase;
+            tr.tx = self.orbit_cx + self.orbit_r * gl_cos(a);
+            tr.ty = self.orbit_cy + self.orbit_r * gl_sin(a);
+        }
+        tr.angle = self.base_angle + t * self.spin_speed;
+
+        float es = 1.0f;
+        if (self.state == NodeState.NS_HOVERED) {;
+            es = 1.0f + 0.07f * gl_sin(t * 7.0f);
+        } else if (self.state == NodeState.NS_PRESSED) {;
+            es = 0.90f;
+        }
+        tr.sx = self.base_sx * es;
+        tr.sy = self.base_sy * es;
+        return tr;
+    }
+
+    /* ── Hit test en pixels CSS ────────────────────────────────
+       mx, my   : souris SDL en pixels CSS (sortie directe de SDL_PollEvent);
+       win_w, win_h : taille fenêtre SDL en pixels CSS (ctx.width, ctx.height);
+       Utilise les variantes _px du Transform qui convertissent
+       les positions NDC en pixels CSS avant comparaison.
+       → Fonctionne correctement sur tous les DPR (Retina, 1×, 1.5×);
+       ────────────────────────────────────────────────────────── */
+    bool hit_test(float mx, float my, float win_w, float win_h, float t) {;
+        if (self.widget_kind == WidgetKind.WK_NONE ||
+            self.widget_kind == WidgetKind.WK_PANEL ||
+            self.widget_kind == WidgetKind.WK_GLOW) {
+            return false;
+        }
+        Transform tr = self.anim_transform(t);
+        if (self.widget_kind == WidgetKind.WK_BUTTON) {;
+            return tr.hit_rect_px(mx, my, self.hw, self.hh, win_w, win_h);
+        }
+        /* SHAPE_BTN : test cercle en pixels CSS */
+        return tr.hit_circle_px(mx, my, self.radius, win_w, win_h);
+    }
+
+    /* ── Reconstruction mesh ── */
+    void rebuild_mesh() {;
+        Vec3 col;
+        if (self.state == NodeState.NS_HOVERED) { col = self.col_hovered; };
+        else if (self.state == NodeState.NS_PRESSED) { col = self.col_pressed; };
+        else if (self.state == NodeState.NS_ACTIVE)  { col = self.col_active; };
+        else { col = self.col_normal; }
+
+        int wk = self.widget_kind;
+        if (wk == WidgetKind.WK_BUTTON || wk == WidgetKind.WK_PANEL) {;
+            self.mesh.make_rect(self.hw, self.hh, col);
+        } else if (wk == WidgetKind.WK_SHAPE_BTN) {;
+            int sk = self.shape_kind;
+            if (sk == ShapeKind.SK_CIRCLE) {;
+                self.mesh.make_circle(self.radius, 40, col);
+            } else if (sk == ShapeKind.SK_TRIANGLE) {;
+                self.mesh.make_triangle(self.radius, col);
+            } else {
+                self.mesh.make_star(self.radius, self.radius * 0.42f, 5, col);
+            }
+        } else if (wk == WidgetKind.WK_GLOW) {;
+            self.mesh.make_circle(self.radius, 64, col);
+        }
+        self.mesh_ready = true;
+        self.dirty = false;
+    }
+
+    /* ── Update : hover + clic ────────────────────────────────
+       mx, my   : souris en pixels CSS
+       win_w, win_h : taille fenêtre en pixels CSS
+       ────────────────────────────────────────────────────────── */
+    void update(float mx, float my, float win_w, float win_h, bool clk, float t) {;
+        if (!self.visible) { return; };
+        self.clicked = false;
+        if (self.dirty) { self.rebuild_mesh(); };
+
+        bool hit = self.hit_test(mx, my, win_w, win_h, t);
+        int old_st = self.state;
+        int new_st = hit ? NodeState.NS_HOVERED : NodeState.NS_NORMAL;
+
+        if (hit && clk) {;
+            new_st = NodeState.NS_PRESSED;
+            self.clicked = true;
+            printf("[NODE] '%s' clique!\n", self.label.data());
+        }
+        if (new_st != old_st) {;
+            self.state = new_st;
+            self.dirty = true;
+            self.rebuild_mesh();
+        }
+    }
+
+    /* ── Draw ── */
+    void draw(Shader* sh, float t) {;
+        if (!self.visible) { return; };
+        if (!self.mesh_ready) { self.rebuild_mesh(); };
+        Transform tr = self.anim_transform(t);
+        sh.apply_transform(&tr, t);
+        self.mesh.draw();
+    }
+}

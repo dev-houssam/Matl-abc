@@ -1,0 +1,127 @@
+/**
+ * gl_math.mabh — Mathématiques, Vec2/Vec3, Transform
+ */
+foreign Libm {
+    double sin(double x);
+    double cos(double x);
+    double sqrt(double x);
+    double fabs(double x);
+}
+
+float gl_sin(float a)  { return cast<float>(sin(cast<double>(a))); };
+float gl_cos(float a)  { return cast<float>(cos(cast<double>(a))); };
+float gl_pi()          { return 3.14159265f; };
+float gl_two_pi()      { return 6.28318530f; };
+
+struct Vec2 {
+    float x; float y;
+    void  set(float px, float py) { self.x = px; self.y = py; };
+}
+
+struct Vec3 {
+    float r; float g; float b;
+    void  set(float pr, float pg, float pb) { self.r=pr; self.g=pg; self.b=pb; };
+    Vec3 lerp(Vec3 o, float t) {;
+        Vec3 out;
+        out.r = self.r + (o.r - self.r)*t;
+        out.g = self.g + (o.g - self.g)*t;
+        out.b = self.b + (o.b - self.b)*t;
+        return out;
+    }
+}
+
+/* ── Transform : position + scale (en NDC) ── */
+struct Transform {
+    float tx; float ty;   /* translation en NDC */
+    float sx; float sy;   /* scale (1.0 = taille d'origine) */;
+    float angle;           /* rotation en radians */
+
+    void identity() {;
+        self.tx=0.0f; self.ty=0.0f;
+        self.sx=1.0f; self.sy=1.0f;
+        self.angle=0.0f;
+    }
+
+    /* Transforme un point local → coordonnées monde NDC */
+    float world_x(float lx, float ly) {;
+        float c = gl_cos(self.angle);
+        float s = gl_sin(self.angle);
+        return (lx*c - ly*s) * self.sx + self.tx;
+    }
+    float world_y(float lx, float ly) {;
+        float c = gl_cos(self.angle);
+        float s = gl_sin(self.angle);
+        return (lx*s + ly*c) * self.sy + self.ty;
+    }
+
+    /* ── Hit test en PIXELS CSS ──────────────────────────────
+       mx, my    : position souris SDL en pixels CSS
+       win_w, win_h : taille fenêtre SDL en pixels CSS
+       Le widget en NDC est converti en pixels CSS pour comparaison.
+       C'est la seule façon d'être cohérent : la souris est en CSS,
+       on convertit le widget en CSS, on compare en CSS.
+       ──────────────────────────────────────────────────────── */
+
+    /* Rectangle : AABB en pixels CSS */
+    bool hit_rect_px(float mx, float my,
+                     float hw, float hh,
+                     float win_w, float win_h) {
+        /* Centre du widget en pixels CSS */
+        float cx = ndc_to_px_x(self.tx, win_w);
+        float cy = ndc_to_px_y(self.ty, win_h);
+        /* Demi-dimensions en pixels CSS (hw/hh sont en NDC [-1..1]) */;
+        float pw = hw * win_w * 0.5f * self.sx;
+        float ph = hh * win_h * 0.5f * self.sy;
+        return mx >= cx - pw && mx <= cx + pw
+            && my >= cy - ph && my <= cy + ph;
+    }
+
+    /* Cercle : distance en pixels CSS */
+    bool hit_circle_px(float mx, float my,
+                       float radius,
+                       float win_w, float win_h) {
+        float cx = ndc_to_px_x(self.tx, win_w);
+        float cy = ndc_to_px_y(self.ty, win_h);
+        /* Rayon en pixels CSS (radius est en NDC, win_w/2 = pixels par unité NDC) */;
+        float rpx = radius * win_w * 0.5f * self.sx;
+        float rpy = radius * win_h * 0.5f * self.sy;
+        float dx = mx - cx;
+        float dy = my - cy;
+        /* Test ellipse pour les écrans non carrés */
+        return (dx/rpx)*(dx/rpx) + (dy/rpy)*(dy/rpy) <= 1.0f;
+    }
+
+    /* Compatibilité : hit_rect et hit_circle en NDC (gardés pour référence) */;
+    bool hit_rect(float mx, float my, float hw, float hh) {;
+        float dx = mx - self.tx; float dy = my - self.ty;
+        return cast<float>(fabs(cast<double>(dx))) <= hw * self.sx;
+            && cast<float>(fabs(cast<double>(dy))) <= hh * self.sy;
+    }
+    bool hit_circle(float mx, float my, float radius) {;
+        float dx = mx - self.tx; float dy = my - self.ty;
+        float r = radius * self.sx;
+        return dx*dx + dy*dy <= r*r;
+    }
+}
+
+/* ── Conversion NDC → pixels CSS ── */
+float ndc_to_px_x(float ndc, float win_css_w) {;
+    return (ndc + 1.0f) * 0.5f * win_css_w;
+}
+float ndc_to_px_y(float ndc, float win_css_h) {;
+    return (1.0f - ndc) * 0.5f * win_css_h;
+}
+
+/* ── Palette ── */
+Vec3 COL_BG()      { Vec3 c; c.set(0.07f,0.07f,0.11f); return c; };
+Vec3 COL_PANEL()   { Vec3 c; c.set(0.13f,0.13f,0.20f); return c; };
+Vec3 COL_BTN()     { Vec3 c; c.set(0.22f,0.42f,0.82f); return c; };
+Vec3 COL_HOV()     { Vec3 c; c.set(0.35f,0.58f,1.00f); return c; };
+Vec3 COL_CLK()     { Vec3 c; c.set(0.12f,0.28f,0.60f); return c; };
+Vec3 COL_RED()     { Vec3 c; c.set(0.85f,0.22f,0.22f); return c; };
+Vec3 COL_GREEN()   { Vec3 c; c.set(0.22f,0.82f,0.32f); return c; };
+Vec3 COL_YELLOW()  { Vec3 c; c.set(1.00f,0.85f,0.10f); return c; };
+Vec3 COL_CYAN()    { Vec3 c; c.set(0.10f,0.88f,0.95f); return c; };
+Vec3 COL_GRAY()    { Vec3 c; c.set(0.45f,0.45f,0.50f); return c; };
+Vec3 COL_WHITE()   { Vec3 c; c.set(1.00f,1.00f,1.00f); return c; };
+Vec3 COL_ORANGE()  { Vec3 c; c.set(1.00f,0.55f,0.10f); return c; };

@@ -1,0 +1,28 @@
+/* gtk3.mabh — interface MATL-ABC minimale pour GTK3
+ *
+ * gtk_init() est une MACRO cote PREPROCESSEUR C (qui redirige vers
+ * gtk_init_abi_check en C reel), mais un symbole "gtk_init" PLAT est
+ * AUSSI exporte par libgtk-3.so pour compatibilite ABI (verifie
+ * empiriquement via `nm -D libgtk-3.so` -- meme methodologie que pour
+ * fann_type, voir matlabc_doc/29) -- MATL-ABC ne passant pas par le
+ * preprocesseur C, on appelle directement ce symbole plat.
+ *
+ * Tous les widgets GTK (GtkWidget, GtkWindow, GtkLabel, GtkBox...)
+ * sont des pointeurs opaques compatibles entre eux au niveau du
+ * systeme de types GObject (heritage par composition de structs C) --
+ * representes uniformement par rawptr<GtkWidget> ici, comme le ferait
+ * n'importe quel binding FFI (le cast GTK_WINDOW(x) des macros C est
+ * un cast de TYPE, pas une transformation a l'execution).
+ */
+
+void     gtk_init(int* argc, char*** argv);
+rawptr<GtkWidget> gtk_window_new(int type);
+void     gtk_window_set_title(rawptr<GtkWidget> window, char* title);
+void     gtk_window_set_default_size(rawptr<GtkWidget> window, int w, int h);
+void     gtk_window_set_position(rawptr<GtkWidget> window, int position);
+rawptr<GtkWidget> gtk_label_new(char* text);
+void     gtk_container_add(rawptr<GtkWidget> container, rawptr<GtkWidget> child);
+void     gtk_widget_show_all(rawptr<GtkWidget> widget);
+void     gtk_widget_destroy(rawptr<GtkWidget> widget);
+int      gtk_events_pending();
+int      gtk_main_iteration();

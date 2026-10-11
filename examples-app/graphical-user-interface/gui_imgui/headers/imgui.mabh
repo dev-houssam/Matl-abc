@@ -1,0 +1,16 @@
+/* imgui.mabh — interface MATL-ABC pour Dear ImGui, VIA un mini-
+ * wrapper C (imgui_wrapper.cpp, compile a part avec g++) -- ImGui
+ * est du C++ "immediate mode" (namespace ImGui::, pas de classes a
+ * instancier directement mais des appels de fonctions C++ qui
+ * exigent quand meme le mangling C++, d'ou le wrapper).
+ */
+rawptr imgui_create_context();
+void   imgui_new_frame();
+void   imgui_begin_window(char* title);
+void   imgui_text(char* text);
+int    imgui_button(char* label);
+void   imgui_end_window();
+void   imgui_render();
+int    imgui_get_vertex_count();
+void   imgui_destroy_context(rawptr ctx);
+char*  imgui_get_version();

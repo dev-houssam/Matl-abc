@@ -1,0 +1,12 @@
+/* wx.mabh — interface MATL-ABC pour wxWidgets, VIA un mini-wrapper
+ * C (wx_wrapper.cpp, compile a part avec g++) -- wxWidgets etant du
+ * C++ pur (classes, pas d'API C native), un lien FFI direct depuis
+ * MATL-ABC est impossible sans cette etape intermediaire.
+ */
+void   wx_initialize();
+void   wx_uninitialize();
+rawptr wx_frame_new(char* title, int w, int h);
+void   wx_frame_show(rawptr frame);
+void   wx_frame_destroy(rawptr frame);
+int    wx_get_version_major();
+int    wx_get_version_minor();

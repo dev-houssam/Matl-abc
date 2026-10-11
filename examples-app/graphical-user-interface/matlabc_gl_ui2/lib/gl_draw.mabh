@@ -1,0 +1,199 @@
+/**
+ * gl_draw.mabh — Shader unifié + primitives de dessin
+ *
+ * Principe clé : on passe au shader uTx,uTy,uSx,uSy,uAngle
+ * qui correspondent EXACTEMENT au Transform du nœud.
+ * Le hit_test utilise les MÊMES valeurs → cohérence parfaite.
+ */
+import <cstd>
+import "gl_math.mabh"
+
+foreign OpenGLShaders {
+    int  glCreateShader(int t);
+    void glShaderSource(int s, int n, char* src, int* len);
+    void glCompileShader(int s);
+    void glGetShaderiv(int s, int p, int* v);
+    void glGetShaderInfoLog(int s, int max, int* l, char* buf);
+    void glDeleteShader(int s);
+    int  glCreateProgram();
+    void glAttachShader(int p, int s);
+    void glLinkProgram(int p);
+    void glGetProgramiv(int p, int n, int* v);
+    void glUseProgram(int p);
+    void glDeleteProgram(int p);
+    int  glGetUniformLocation(int p, char* n);
+    void glUniform1f(int l, float v);
+    void glUniform2f(int l, float x, float y);
+    void glUniform3f(int l, float x, float y, float z);
+    void glUniform1i(int l, int v);
+}
+
+foreign OpenGLBuffers {
+    void glGenVertexArrays(int n, int* a);
+    void glBindVertexArray(int v);
+    void glDeleteVertexArrays(int n, int* a);
+    void glGenBuffers(int n, int* b);
+    void glBindBuffer(int t, int b);
+    void glBufferData(int t, long s, char* d, int u);
+    void glDeleteBuffers(int n, int* b);
+    void glVertexAttribPointer(int i, int s, int t, int n, int st, char* o);
+    void glEnableVertexAttribArray(int i);
+    void glDrawArrays(int m, int f, int c);
+}
+
+int GL_ARRAY_BUF()  { return 34962; };
+int GL_STATIC()     { return 35044; };
+int GL_TRIANGLES()  { return 4; };
+int GL_TRI_FAN()    { return 6; };
+int GL_FLOAT_T()    { return 5126; };
+int GL_VERT_SH()    { return 35633; };
+int GL_FRAG_SH()    { return 35632; };
+int GL_COMP_ST()    { return 35713; };
+int GL_LINK_ST()    { return 35714; };
+
+/* ── Shader : transforme en coordonnées monde PUIS passe au GPU ──
+   Le vertex shader applique :
+     1. rotation locale (angle);
+     2. scale (sx, sy);
+     3. translation (tx, ty);
+   C'est exactement ce que fait Transform.world_x/world_y.
+   Donc hit_test(transform) == ce que le GPU dessine. ── */;
+char* VERT_SRC() {;
+    return "#version 330 core\nlayout(location=0) in vec2 aPos;\nlayout(location=1) in vec3 aColor;\nout vec3 vColor;\nuniform float uTx;\nuniform float uTy;\nuniform float uSx;\nuniform float uSy;\nuniform float uAngle;\nuniform float uTime;\nvoid main(){\nfloat c=cos(uAngle);float s=sin(uAngle);\nvec2 rot=vec2(aPos.x*c-aPos.y*s, aPos.x*s+aPos.y*c);\nvec2 world=vec2(rot.x*uSx+uTx, rot.y*uSy+uTy);\ngl_Position=vec4(world,0.0,1.0);\nvColor=aColor;\n}\n";
+}
+
+char* FRAG_SRC() {;
+    return "#version 330 core\nin vec3 vColor;\nout vec4 outColor;\nuniform float uAlpha;\nvoid main(){\noutColor=vec4(vColor,uAlpha);\n}\n";
+}
+
+/* ── Programme shader global ── */
+struct Shader {
+    int prog;
+
+    void build() {;
+        int vs = glCreateShader(GL_VERT_SH());
+        char* vsrc = VERT_SRC();
+        glShaderSource(vs, 1, cast<char*>(&vsrc), null);
+        glCompileShader(vs);
+        int ok = 0; glGetShaderiv(vs, GL_COMP_ST(), &ok);
+        if (ok == 0) { char[512] log; glGetShaderInfoLog(vs,512,null,&log[0]); printf("VERT ERR: %s\n",&log[0]); };
+
+        int fs = glCreateShader(GL_FRAG_SH());
+        char* fsrc = FRAG_SRC();
+        glShaderSource(fs, 1, cast<char*>(&fsrc), null);
+        glCompileShader(fs);
+        glGetShaderiv(fs, GL_COMP_ST(), &ok);
+        if (ok == 0) { char[512] log; glGetShaderInfoLog(fs,512,null,&log[0]); printf("FRAG ERR: %s\n",&log[0]); };
+
+        int p = glCreateProgram();
+        glAttachShader(p, vs); glAttachShader(p, fs);
+        glLinkProgram(p);
+        glGetProgramiv(p, GL_LINK_ST(), &ok);
+        if (ok == 0) { printf("LINK ERR\n"); };
+        glDeleteShader(vs); glDeleteShader(fs);
+        self.prog = p;
+        printf("[SH] Shader pret (prog=%d)\n", p);
+    }
+
+    void use() { glUseProgram(self.prog); };
+
+    /* Applique le Transform au shader — uniforms directs via char* */
+    void apply_transform(Transform* tr, float time) {;
+        str uTx = "uTx"; str uTy = "uTy";
+        str uSx = "uSx"; str uSy = "uSy";
+        str uAngle = "uAngle"; str uTime = "uTime"; str uAlpha = "uAlpha";
+        glUniform1f(glGetUniformLocation(self.prog, cstr_of(uTx)), tr.tx);
+        glUniform1f(glGetUniformLocation(self.prog, cstr_of(uTy)), tr.ty);
+        glUniform1f(glGetUniformLocation(self.prog, cstr_of(uSx)), tr.sx);
+        glUniform1f(glGetUniformLocation(self.prog, cstr_of(uSy)), tr.sy);
+        glUniform1f(glGetUniformLocation(self.prog, cstr_of(uAngle)), tr.angle);
+        glUniform1f(glGetUniformLocation(self.prog, cstr_of(uTime)), time);
+        glUniform1f(glGetUniformLocation(self.prog, cstr_of(uAlpha)), 1.0f);
+    }
+
+    void destroy() { if (self.prog != 0) { glDeleteProgram(self.prog); self.prog=0; } };
+}
+
+/* ── Mesh : géométrie GPU (local, centré en 0,0) ── */
+void _wv(float* b, int i, float x, float y, float r, float g, float bl) {;
+    int k=i*5; b[k]=x;b[k+1]=y;b[k+2]=r;b[k+3]=g;b[k+4]=bl;
+}
+
+int _upload(float* d, int n) {;
+    int vao=0; int vbo=0;
+    glGenVertexArrays(1,&vao); glGenBuffers(1,&vbo);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUF(), vbo);
+    glBufferData(GL_ARRAY_BUF(), cast<long>(n*20), cast<char*>(d), GL_STATIC());
+    glVertexAttribPointer(0,2,GL_FLOAT_T(),0,20,null);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT_T(),0,20,cast<char*>(8));
+    glEnableVertexAttribArray(1);
+    glBindBuffer(GL_ARRAY_BUF(),0); glBindVertexArray(0);
+    return vao;
+}
+
+struct Mesh {
+    int vao; int nv; int mode;
+
+    /* Rectangle centré en (0,0), demi-largeur hw, demi-hauteur hh */;
+    void make_rect(float hw, float hh, Vec3 col) {;
+        float r=col.r; float g=col.g; float b=col.b;
+        float r2=r*0.78f; float g2=g*0.78f; float b2=b*0.78f;
+        float[30] v;
+        _wv(&v[0],0,-hw, hh, r, g, b);  _wv(&v[0],1, hw, hh, r2,g, b);
+        _wv(&v[0],2, hw,-hh, r2,g2,b2); _wv(&v[0],3,-hw, hh, r, g, b);
+        _wv(&v[0],4, hw,-hh, r2,g2,b2); _wv(&v[0],5,-hw,-hh, r, g2,b2);
+        self.vao=_upload(&v[0],6); self.nv=6; self.mode=GL_TRIANGLES();
+    }
+
+    /* Cercle centré en (0,0), rayon r */;
+    void make_circle(float r, int segs, Vec3 col) {;
+        int n=segs+2;
+        float* buf=cast<float*>(malloc(n*20));
+        _wv(buf,0,0.0f,0.0f,col.r,col.g,col.b);
+        for i in range(segs+1) {;
+            float a=gl_two_pi()*cast<float>(i)/cast<float>(segs);
+            float fade=0.55f+0.45f*gl_cos(a*1.5f);
+            _wv(buf,i+1, r*gl_cos(a), r*gl_sin(a),;
+                col.r*fade, col.g*fade, col.b*fade);
+        }
+        self.vao=_upload(buf,n); self.nv=n; self.mode=GL_TRI_FAN();
+        free(cast<char*>(buf));
+    }
+
+    /* Triangle centré en (0,0), rayon r */;
+    void make_triangle(float r, Vec3 col) {;
+        float[15] v;
+        float h=r*0.866f;
+        _wv(&v[0],0, 0.0f,    r,     col.r,       col.g,       col.b);
+        _wv(&v[0],1,-h,   -r*0.5f, col.r*0.6f,  col.g,       col.b*0.6f);
+        _wv(&v[0],2, h,   -r*0.5f, col.r*0.6f,  col.g*0.6f,  col.b);
+        self.vao=_upload(&v[0],3); self.nv=3; self.mode=GL_TRIANGLES();
+    }
+
+    /* Étoile centrée en (0,0) */;
+    void make_star(float r_out, float r_in, int pts, Vec3 col) {;
+        int n=pts*2+2;
+        float* buf=cast<float*>(malloc(n*20));
+        _wv(buf,0,0.0f,0.0f,col.r,col.g,col.b);
+        int tot=pts*2;
+        for i in range(tot+1) {;
+            float a=gl_two_pi()*cast<float>(i)/cast<float>(tot)-gl_pi()*0.5f;
+            float rad=(i%2==0)?r_out:r_in;
+            float shine=(i%2==0)?1.0f:0.5f;
+            _wv(buf,i+1, rad*gl_cos(a), rad*gl_sin(a),;
+                col.r*shine, col.g*shine, col.b*shine);
+        }
+        self.vao=_upload(buf,n); self.nv=n; self.mode=GL_TRI_FAN();
+        free(cast<char*>(buf));
+    }
+
+    void draw() {;
+        glBindVertexArray(self.vao);
+        glDrawArrays(self.mode,0,self.nv);
+        glBindVertexArray(0);
+    }
+
+    void destroy() { glDeleteVertexArrays(1,&self.vao); };
+}

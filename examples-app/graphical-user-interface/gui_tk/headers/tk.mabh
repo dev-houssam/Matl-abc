@@ -1,0 +1,14 @@
+/* tk.mabh — interface MATL-ABC minimale pour Tcl/Tk
+ *
+ * Le plus simple des toolkits GUI a integrer en FFI : toute l'API Tk
+ * peut etre pilotee via Tcl_Eval() avec des SCRIPTS TCL (chaines de
+ * caracteres), sans avoir a declarer une signature par widget comme
+ * pour GTK -- 4 fonctions suffisent pour tout piloter.
+ *
+ * Type opaque : Tcl_Interp* -> rawptr<TclInterp>
+ */
+rawptr<TclInterp> Tcl_CreateInterp();
+int  Tcl_Init(rawptr<TclInterp> interp);
+int  Tk_Init(rawptr<TclInterp> interp);
+int  Tcl_Eval(rawptr<TclInterp> interp, char* script);
+char* Tcl_GetStringResult(rawptr<TclInterp> interp);

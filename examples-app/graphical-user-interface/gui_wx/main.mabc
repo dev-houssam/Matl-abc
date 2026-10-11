@@ -1,0 +1,34 @@
+/* ===========================================================
+ * Test minimal wxWidgets — via mini-wrapper C + FFI MATL-ABC
+ * ===========================================================
+ * wxWidgets est une bibliotheque C++ pure (classes wxFrame, wxApp...)
+ * -- AUCUNE API C native. Le pont FFI passe par wx_wrapper.cpp, un
+ * petit fichier extern "C" compile a part (g++), qui traduit chaque
+ * appel MATL-ABC en un appel de methode C++ reel. C'est le detour
+ * OBLIGATOIRE pour toute bibliotheque C++ orientee objet (meme
+ * principe deja documente pour LibTorch/OpenNN, matlabc_doc/29).
+ * =========================================================== */
+
+import <cstd>
+import <wxwrapper>
+
+int main() {
+    printf("=== Test minimal wxWidgets (via wrapper C) ===\n\n");
+
+    printf("Version wxWidgets : %d.%d\n", wx_get_version_major(), wx_get_version_minor());
+
+    wx_initialize();
+
+    /* dimensions : notation litterale */
+    matrix|int, 1, 2| size = | 350 180 |;
+
+    rawptr frame = wx_frame_new("MATL-ABC + wxWidgets", size[0][0], size[0][1]);
+    wx_frame_show(frame);
+    printf("wxFrame %dx%d creee et affichee.\n", size[0][0], size[0][1]);
+
+    wx_frame_destroy(frame);
+    wx_uninitialize();
+
+    printf("\n[OK] wxWidgets fonctionne via wrapper C + FFI MATL-ABC.\n");
+    return 0;
+}

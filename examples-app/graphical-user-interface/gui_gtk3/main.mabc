@@ -1,0 +1,45 @@
+/* ===========================================================
+ * Test minimal GTK3 — via FFI MATL-ABC
+ * ===========================================================
+ * Cree une vraie fenetre GTK3 (via Xvfb, affichage virtuel de ce
+ * bac a sable) avec un label, l'affiche, traite quelques evenements
+ * en attente, puis se ferme -- pas de boucle gtk_main() bloquante
+ * (evenements traites manuellement via gtk_main_iteration() dans une
+ * boucle BORNEE, pour un test automatisable sans interaction).
+ * =========================================================== */
+
+import <cstd>
+import <gtk3>
+
+int main(int argc, char** argv) {
+    printf("=== Test minimal GTK3 ===\n\n");
+
+    gtk_init(&argc, &argv);
+
+    /* taille de fenetre : notation litterale */
+    matrix|int, 1, 2| size = | 400 200 |;
+
+    rawptr<GtkWidget> window = gtk_window_new(0);   /* GTK_WINDOW_TOPLEVEL = 0 */
+    gtk_window_set_title(window, "MATL-ABC + GTK3");
+    gtk_window_set_default_size(window, size[0][0], size[0][1]);
+    gtk_window_set_position(window, 1);  /* GTK_WIN_POS_CENTER = 1 */
+
+    rawptr<GtkWidget> label = gtk_label_new("Bonjour depuis MATL-ABC !");
+    gtk_container_add(window, label);
+
+    gtk_widget_show_all(window);
+    printf("Fenetre GTK3 %dx%d creee et affichee (Xvfb).\n", size[0][0], size[0][1]);
+
+    /* traiter les evenements en attente, borne (pas de boucle infinie) */
+    int iterations = 0;
+    while (gtk_events_pending() != 0 && iterations < 50) {
+        gtk_main_iteration();
+        iterations = iterations + 1;
+    }
+    printf("%d evenement(s) traite(s).\n", iterations);
+
+    gtk_widget_destroy(window);
+    printf("\n[OK] GTK3 fonctionne via FFI MATL-ABC.\n");
+
+    return 0;
+}

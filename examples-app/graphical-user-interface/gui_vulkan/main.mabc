@@ -1,0 +1,63 @@
+/* ===========================================================
+ * Test minimal Vulkan — via FFI MATL-ABC
+ * ===========================================================
+ * Creation/destruction d'instance Vulkan + enumeration des
+ * peripheriques physiques -- pas de fenetre/surface (necessiterait
+ * une extension specifique a la plateforme, hors de portee d'un test
+ * minimal dans ce bac a sable headless).
+ * =========================================================== */
+
+import <cstd>
+
+import <vulkan>
+
+/* VkInstanceCreateInfo : definie ICI (pas dans le .mabh -- voir
+   headers/vulkan.mabh, un .mabh ne supporte que des struct OPAQUES).
+   Disposition ABI-sensible : champs de 8 octets (pointeurs) alignes
+   sur 8, d'ou le padding explicite apres chaque champ de 4 octets. */
+struct VkInstanceCreateInfo {
+    int    sType;
+    int    pNextPad;
+    rawptr pNext;
+    int    flags;
+    int    flagsPad;
+    rawptr pApplicationInfo;
+    int    enabledLayerCount;
+    int    enabledLayerCountPad;
+    rawptr ppEnabledLayerNames;
+    int    enabledExtensionCount;
+    int    enabledExtensionCountPad;
+    rawptr ppEnabledExtensionNames;
+}
+
+int main() {
+    printf("=== Test minimal Vulkan ===\n\n");
+
+    VkInstanceCreateInfo info;
+    info.sType = 1;   /* VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO */
+    info.pNext = null;
+    info.flags = 0;
+    info.pApplicationInfo = null;
+    info.enabledLayerCount = 0;
+    info.ppEnabledLayerNames = null;
+    info.enabledExtensionCount = 0;
+    info.ppEnabledExtensionNames = null;
+
+    rawptr instance = null;
+    int result = vkCreateInstance(&info, null, &instance);
+    printf("vkCreateInstance -> code %d (0 = VK_SUCCESS attendu)\n", result);
+
+    if (result == 0) {
+        int device_count = 0;
+        int r2 = vkEnumeratePhysicalDevices(instance, &device_count, null);
+        printf("vkEnumeratePhysicalDevices -> code %d, %d peripherique(s) trouve(s)\n", r2, device_count);
+        printf("  (0 est normal sans GPU materiel ni pilote logiciel dans ce sandbox)\n");
+
+        vkDestroyInstance(instance, null);
+        printf("\n[OK] Vulkan fonctionne via FFI MATL-ABC (instance creee et detruite).\n");
+    } else {
+        printf("\n[FAIL] Impossible de creer l'instance Vulkan.\n");
+    }
+
+    return 0;
+}
